@@ -1,0 +1,118 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Fields:
+    //   - id: string (required)
+    //   - username: string (required)
+    //   - password: string (required)
+    //   - email: string (required)
+    //   - role: string (required, enum: admin, user, observer)
+    //   - name: string (required)
+    //
+    // Collection: items
+    // Fields:
+    //   - id: string (required)
+    //   - name: string (required)
+    //   - quantity: number (required)
+    //   - unit: string (required)
+    //   - lowThreshold: number (optional)
+    //   - criticalThreshold: number (optional)
+    //
+    // Collection: transactions
+    // Fields:
+    //   - id: string (required)
+    //   - itemId: string (required)
+    //   - itemName: string (required)
+    //   - quantity: number (required)
+    //   - user: string (required)
+    //   - date: string (required)
+    //   - type: string (required, enum: withdraw, receive)
+    //
+    // Collection: orders
+    // Fields:
+    //   - id: string (required)
+    //   - item: string (required)
+    //   - quantity: number (required)
+    //   - order_date: string (required)
+    //   - delivery_date: string (optional)
+    //   - status: string (required, enum: pending, delivered, cancelled)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      // The app uses a custom login system by reading the 'users' collection.
+      // For now, we allow read access to 'users' to enable this.
+      // In a production app, Firebase Auth should be used instead.
+      return true;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function isValidUser(data) {
+      return data.username is string && data.username.size() > 0 &&
+             data.password is string && data.password.size() > 0 &&
+             data.role in ['admin', 'user', 'observer'];
+    }
+
+    function isValidItem(data) {
+      return data.name is string && data.name.size() > 0 &&
+             data.quantity is number &&
+             data.unit is string;
+    }
+
+    function isValidTransaction(data) {
+      return data.itemId is string &&
+             data.itemName is string &&
+             data.quantity is number &&
+             data.user is string &&
+             data.type in ['withdraw', 'receive'];
+    }
+
+    function isValidOrder(data) {
+      return data.item is string &&
+             data.quantity is number &&
+             data.status in ['pending', 'delivered', 'cancelled'];
+    }
+
+    // Test connection
+    match /test/connection {
+      allow read, write: if true;
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if true;
+      allow create, update: if hasRequiredFields(['username', 'password', 'role', 'name']) && isValidUser(request.resource.data);
+      allow delete: if true; // In a real app, only admin should delete
+    }
+
+    // Inventory Items
+    match /items/{itemId} {
+      allow read: if true;
+      allow create, update: if hasRequiredFields(['name', 'quantity', 'unit']) && isValidItem(request.resource.data);
+      allow delete: if true;
+    }
+
+    // Transactions
+    match /transactions/{transactionId} {
+      allow read: if true;
+      allow create: if hasRequiredFields(['itemId', 'itemName', 'quantity', 'user', 'date', 'type']) && isValidTransaction(request.resource.data);
+      allow update, delete: if true;
+    }
+
+    // Orders
+    match /orders/{orderId} {
+      allow read: if true;
+      allow create, update: if hasRequiredFields(['item', 'quantity', 'order_date', 'status']) && isValidOrder(request.resource.data);
+      allow delete: if true;
+    }
+  }
+}

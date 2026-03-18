@@ -1,0 +1,79 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "System user with role and password",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "username": { "type": "string" },
+        "password": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user", "observer"] },
+        "name": { "type": "string" }
+      },
+      "required": ["id", "username", "password", "role", "name"]
+    },
+    "InventoryItem": {
+      "title": "Inventory Item",
+      "description": "Item in the inventory",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "quantity": { "type": "number" },
+        "unit": { "type": "string" },
+        "lowThreshold": { "type": "number" },
+        "criticalThreshold": { "type": "number" }
+      },
+      "required": ["id", "name", "quantity", "unit"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Inventory movement record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "itemId": { "type": "string" },
+        "itemName": { "type": "string" },
+        "quantity": { "type": "number" },
+        "user": { "type": "string" },
+        "date": { "type": "string" },
+        "type": { "type": "string", "enum": ["withdraw", "receive"] }
+      },
+      "required": ["id", "itemId", "itemName", "quantity", "user", "date", "type"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Supply order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "item": { "type": "string" },
+        "quantity": { "type": "number" },
+        "order_date": { "type": "string" },
+        "delivery_date": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["pending", "delivered", "cancelled"] }
+      },
+      "required": ["id", "item", "quantity", "order_date", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/items/{itemId}": {
+      "schema": "InventoryItem",
+      "description": "Inventory items"
+    },
+    "/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "Inventory transactions"
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Supply orders"
+    }
+  }
+}
