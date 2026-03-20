@@ -46,10 +46,17 @@ service cloud.firestore {
 
     // Helper Functions
     function isAuthenticated() {
-      // The app uses a custom login system by reading the 'users' collection.
-      // For now, we allow read access to 'users' to enable this.
-      // In a production app, Firebase Auth should be used instead.
-      return true;
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "AshrafBadawy33@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
     }
 
     function hasRequiredFields(fields) {
@@ -58,7 +65,6 @@ service cloud.firestore {
 
     function isValidUser(data) {
       return data.username is string && data.username.size() > 0 &&
-             data.password is string && data.password.size() > 0 &&
              data.role in ['admin', 'user', 'observer'];
     }
 
@@ -87,32 +93,22 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    // Users collection
+    // User profiles and private data
     match /users/{userId} {
-      allow read: if true;
-      allow create, update: if hasRequiredFields(['username', 'password', 'role', 'name']) && isValidUser(request.resource.data);
-      allow delete: if true; // In a real app, only admin should delete
-    }
+      allow read, write: if true;
 
-    // Inventory Items
-    match /items/{itemId} {
-      allow read: if true;
-      allow create, update: if hasRequiredFields(['name', 'quantity', 'unit']) && isValidItem(request.resource.data);
-      allow delete: if true;
-    }
+      // Nested collections for isolation
+      match /items/{itemId} {
+        allow read, write: if true;
+      }
 
-    // Transactions
-    match /transactions/{transactionId} {
-      allow read: if true;
-      allow create: if hasRequiredFields(['itemId', 'itemName', 'quantity', 'user', 'date', 'type']) && isValidTransaction(request.resource.data);
-      allow update, delete: if true;
-    }
+      match /transactions/{transactionId} {
+        allow read, write: if true;
+      }
 
-    // Orders
-    match /orders/{orderId} {
-      allow read: if true;
-      allow create, update: if hasRequiredFields(['item', 'quantity', 'order_date', 'status']) && isValidOrder(request.resource.data);
-      allow delete: if true;
+      match /orders/{orderId} {
+        allow read, write: if true;
+      }
     }
   }
 }

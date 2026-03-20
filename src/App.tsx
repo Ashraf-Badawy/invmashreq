@@ -63,8 +63,17 @@ import {
   orderBy,
   getDoc,
   setDoc,
-  getDocFromServer
+  getDocFromServer,
+  where,
+  getDocs
 } from 'firebase/firestore';
+import { 
+  onAuthStateChanged, 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  signOut,
+  User as FirebaseUser
+} from 'firebase/auth';
 import { db, auth, handleFirestoreError, OperationType } from './firebase';
 
 import { parseUserRequest } from './services/gemini';
@@ -82,34 +91,20 @@ function cn(...inputs: ClassValue[]) {
 }
 
 // Initial Mock Data
-const INITIAL_USERS: User[] = [
-  { id: 'admin-1', username: 'ashraf', password: 'ashrafbadawy', email: 'ashraf@inventory.ai', role: 'admin', name: 'أشرف بدوي' },
-  { id: 'user-1', username: 'user', password: 'ashrafbadawy', email: 'user@inventory.ai', role: 'user', name: 'موظف المخزن' },
-  { id: 'trial-1', username: 'trial', password: 'trial', email: 'trial@inventory.ai', role: 'observer', name: 'مراقب (تجريبي)' },
-];
-
-const INITIAL_ITEMS: InventoryItem[] = [
-  { id: '1', name: 'طابعة HP LaserJet', quantity: 15, unit: 'قطعة', lowThreshold: 10, criticalThreshold: 5 },
-  { id: '2', name: 'ورق A4 (500 ورقة)', quantity: 45, unit: 'رزمة', lowThreshold: 20, criticalThreshold: 10 },
-  { id: '3', name: 'حبر طابعة أسود', quantity: 8, unit: 'علبة', lowThreshold: 5, criticalThreshold: 2 },
-  { id: '4', name: 'جهاز كمبيوتر Dell', quantity: 4, unit: 'جهاز', lowThreshold: 3, criticalThreshold: 1 },
-  { id: '5', name: 'شاشة 24 بوصة', quantity: 12, unit: 'شاشة', lowThreshold: 5, criticalThreshold: 2 },
-];
-
-const INITIAL_TRANSACTIONS: Transaction[] = [];
-
-const INITIAL_ORDERS: Order[] = [];
+const INITIAL_ITEMS: InventoryItem[] = [];
 
 export default function App() {
   // Auth State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState('');
+  const [loginData, setLoginData] = useState({ username: '', password: '' });
 
   // App State
-  const [users, setUsers] = useState<User[]>([]);
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [isAuthReady, setIsAuthReady] = useState(false);
 
   // UI State
@@ -137,98 +132,98 @@ export default function App() {
   const [thresholdValues, setThresholdValues] = useState({ low: 10, critical: 5 });
   const [newOrderData, setNewOrderData] = useState({ item: '', quantity: 1 });
 
-  // User Management State
   const [isAddUserModalOpen, setIsAddUserModalOpen] = useState(false);
+  const [isEditUserModalOpen, setIsEditUserModalOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<User | null>(null);
   const [newUserData, setNewUserData] = useState({ username: '', password: '', name: '', email: '', role: 'user' as UserRole });
-  const [changePasswordData, setChangePasswordData] = useState({ current: '', new: '', confirm: '' });
-
-  // Login Form State
-  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
-  const [loginError, setLoginError] = useState('');
+  const [editUserData, setEditUserData] = useState({ username: '', password: '', name: '', email: '', role: 'user' as UserRole });
 
   // Persistence & Firebase Sync
   useEffect(() => {
-    async function testConnection(retries = 3) {
+    const checkInitialAdmin = async () => {
       try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
-        console.log("Firebase connection successful.");
-      } catch (error) {
-        if (retries > 0) {
-          console.warn(`Firebase connection failed, retrying... (${retries} retries left)`);
-          setTimeout(() => testConnection(retries - 1), 2000);
-        } else if(error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration. The client is offline.");
+        const usersRef = collection(db, 'users');
+        const q = query(usersRef, where('username', '==', 'ashraf'));
+        const querySnapshot = await getDocs(q);
+        
+        if (querySnapshot.empty) {
+          // Create initial admin
+          await addDoc(usersRef, {
+            username: 'ashraf',
+            password: '11111',
+            name: 'أشرف',
+            email: 'AshrafBadawy33@gmail.com',
+            role: 'admin'
+          });
+          console.log("Initial admin 'ashraf' created.");
         }
+      } catch (error) {
+        handleFirestoreError(error, OperationType.GET, 'users');
       }
+    };
+    checkInitialAdmin();
+
+    const savedUserId = localStorage.getItem('inventory_user_id');
+    if (savedUserId) {
+      const fetchUser = async () => {
+        try {
+          const userDoc = await getDoc(doc(db, 'users', savedUserId));
+          if (userDoc.exists()) {
+            setCurrentUser(userDoc.data() as User);
+          } else {
+            localStorage.removeItem('inventory_user_id');
+          }
+        } catch (error) {
+          console.error("Error fetching user:", error);
+        } finally {
+          setIsAuthReady(true);
+        }
+      };
+      fetchUser();
+    } else {
+      setIsAuthReady(true);
     }
-    testConnection();
   }, []);
 
-  // Initial Seeding
   useEffect(() => {
-    const seedData = async () => {
-      try {
-        // Check if users collection is empty
-        const usersSnap = await getDocFromServer(doc(db, 'test', 'seed_check')); // Dummy check
-        // Actually, let's just check if we have any users in the state once loaded
-      } catch (e) {}
-    };
-    
-    if (isAuthReady && users.length === 0) {
-      const seed = async () => {
-        for (const user of INITIAL_USERS) {
-          await setDoc(doc(db, 'users', user.id), user);
-        }
-        for (const item of INITIAL_ITEMS) {
-          await setDoc(doc(db, 'items', item.id), item);
-        }
-        console.log("Database seeded with initial data.");
-      };
-      seed();
+    if (!currentUser) {
+      setItems([]);
+      setTransactions([]);
+      setOrders([]);
+      setUsers([]);
+      return;
     }
-  }, [isAuthReady, users.length]);
 
-  useEffect(() => {
-    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
-      const usersData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as User));
-      setUsers(usersData);
-      setIsAuthReady(true);
-      
-      // Check localStorage for existing session
-      const savedUser = localStorage.getItem('smart_inventory_user');
-      if (savedUser && !currentUser) {
-        try {
-          const parsed = JSON.parse(savedUser);
-          const validated = usersData.find(u => u.id === parsed.id && u.password === parsed.password);
-          if (validated) {
-            setCurrentUser(validated);
-          }
-        } catch (e) {
-          localStorage.removeItem('smart_inventory_user');
-        }
-      }
-    }, (error) => handleFirestoreError(error, OperationType.LIST, 'users'));
+    const userPath = `users/${currentUser.id}`;
 
-    const unsubItems = onSnapshot(collection(db, 'items'), (snapshot) => {
+    const unsubItems = onSnapshot(collection(db, userPath, 'items'), (snapshot) => {
       const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as InventoryItem));
       setItems(itemsData);
-    }, (error) => handleFirestoreError(error, OperationType.LIST, 'items'));
+    }, (error) => handleFirestoreError(error, OperationType.LIST, `${userPath}/items`));
 
-    const unsubTransactions = onSnapshot(query(collection(db, 'transactions'), orderBy('date', 'desc')), (snapshot) => {
+    const unsubTransactions = onSnapshot(query(collection(db, userPath, 'transactions'), orderBy('date', 'desc')), (snapshot) => {
       setTransactions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction)));
-    }, (error) => handleFirestoreError(error, OperationType.LIST, 'transactions'));
+    }, (error) => handleFirestoreError(error, OperationType.LIST, `${userPath}/transactions`));
 
-    const unsubOrders = onSnapshot(query(collection(db, 'orders'), orderBy('order_date', 'desc')), (snapshot) => {
+    const unsubOrders = onSnapshot(query(collection(db, userPath, 'orders'), orderBy('order_date', 'desc')), (snapshot) => {
       setOrders(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order)));
-    }, (error) => handleFirestoreError(error, OperationType.LIST, 'orders'));
+    }, (error) => handleFirestoreError(error, OperationType.LIST, `${userPath}/orders`));
+
+    // Only admin can see all users (for management)
+    let unsubUsers = () => {};
+    if (currentUser.role === 'admin') {
+      unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
+        setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as User)));
+      }, (error) => handleFirestoreError(error, OperationType.LIST, 'users'));
+    }
 
     return () => {
-      unsubUsers();
       unsubItems();
       unsubTransactions();
       unsubOrders();
+      unsubUsers();
     };
-  }, []);
+  }, [currentUser]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -262,6 +257,9 @@ export default function App() {
   };
 
   const executeAction = async (action: AIAction) => {
+    if (!currentUser) return;
+    const userPath = `users/${currentUser.id}`;
+
     if (action.action === 'unauthorized') {
       setFeedback({ type: 'error', message: 'عذراً، ليس لديك الصلاحية للقيام بهذه العملية.' });
       return;
@@ -278,11 +276,11 @@ export default function App() {
             criticalThreshold: 5
           };
           try {
-            await addDoc(collection(db, 'items'), newItem);
+            await addDoc(collection(db, userPath, 'items'), newItem);
             setFeedback({ type: 'success', message: `تم إضافة الصنف: ${action.name}` });
             setActiveTab('inventory');
           } catch (error) {
-            handleFirestoreError(error, OperationType.CREATE, 'items');
+            handleFirestoreError(error, OperationType.CREATE, `${userPath}/items`);
           }
         }
         break;
@@ -293,20 +291,20 @@ export default function App() {
           if (item) {
             if (item.quantity >= action.quantity) {
               try {
-                await updateDoc(doc(db, 'items', item.id), { quantity: item.quantity - action.quantity! });
+                await updateDoc(doc(db, userPath, 'items', item.id), { quantity: item.quantity - action.quantity! });
                 const newTransaction: Omit<Transaction, 'id'> = {
                   itemId: item.id,
                   itemName: item.name,
                   quantity: action.quantity,
-                  user: currentUser?.name || 'مستخدم',
+                  user: currentUser.name || 'مستخدم',
                   date: action.date || format(new Date(), 'yyyy-MM-dd'),
                   type: 'withdraw'
                 };
-                await addDoc(collection(db, 'transactions'), newTransaction);
+                await addDoc(collection(db, userPath, 'transactions'), newTransaction);
                 setFeedback({ type: 'success', message: `تم سحب ${action.quantity} ${item.unit} من ${item.name}` });
                 setActiveTab('transactions');
               } catch (error) {
-                handleFirestoreError(error, OperationType.WRITE, 'items/transactions');
+                handleFirestoreError(error, OperationType.WRITE, `${userPath}/items/transactions`);
               }
             } else {
               setFeedback({ type: 'error', message: `المخزون غير كافٍ. المتوفر: ${item.quantity}` });
@@ -327,11 +325,11 @@ export default function App() {
             status: 'pending'
           };
           try {
-            await addDoc(collection(db, 'orders'), newOrder);
+            await addDoc(collection(db, userPath, 'orders'), newOrder);
             setFeedback({ type: 'success', message: `تم إنشاء طلبية لـ ${action.quantity} من ${action.item}` });
             setActiveTab('orders');
           } catch (error) {
-            handleFirestoreError(error, OperationType.CREATE, 'orders');
+            handleFirestoreError(error, OperationType.CREATE, `${userPath}/orders`);
           }
         }
         break;
@@ -341,20 +339,20 @@ export default function App() {
           const item = items.find(i => i.name.includes(action.item!) || action.item!.includes(i.name));
           if (item) {
             try {
-              await updateDoc(doc(db, 'items', item.id), { quantity: item.quantity + action.quantity! });
+              await updateDoc(doc(db, userPath, 'items', item.id), { quantity: item.quantity + action.quantity! });
               const newTransaction: Omit<Transaction, 'id'> = {
                 itemId: item.id,
                 itemName: item.name,
                 quantity: action.quantity,
-                user: currentUser?.name || 'أدمن',
+                user: currentUser.name,
                 date: action.date || format(new Date(), 'yyyy-MM-dd'),
                 type: 'receive'
               };
-              await addDoc(collection(db, 'transactions'), newTransaction);
+              await addDoc(collection(db, userPath, 'transactions'), newTransaction);
               setFeedback({ type: 'success', message: `تم استلام ${action.quantity} من ${item.name}` });
               setActiveTab('inventory');
             } catch (error) {
-              handleFirestoreError(error, OperationType.WRITE, 'items/transactions');
+              handleFirestoreError(error, OperationType.WRITE, `${userPath}/items/transactions`);
             }
           } else {
             const newItem: Omit<InventoryItem, 'id'> = {
@@ -365,11 +363,11 @@ export default function App() {
               criticalThreshold: 5
             };
             try {
-              await addDoc(collection(db, 'items'), newItem);
+              await addDoc(collection(db, userPath, 'items'), newItem);
               setFeedback({ type: 'success', message: `تم إضافة واستلام صنف جديد: ${action.item}` });
               setActiveTab('inventory');
             } catch (error) {
-              handleFirestoreError(error, OperationType.CREATE, 'items');
+              handleFirestoreError(error, OperationType.CREATE, `${userPath}/items`);
             }
           }
         }
@@ -398,40 +396,128 @@ export default function App() {
     }
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoggingIn(true);
     setLoginError('');
 
-    setTimeout(() => {
-      const user = users.find(u => u.username === loginForm.username && u.password === loginForm.password);
-      if (user) {
-        setCurrentUser(user);
-        localStorage.setItem('smart_inventory_user', JSON.stringify(user));
-      } else {
-        setLoginError('اسم المستخدم أو كلمة المرور غير صحيحة');
+    try {
+      const usersRef = collection(db, 'users');
+      const q = query(usersRef, where('username', '==', loginData.username));
+      const querySnapshot = await getDocs(q);
+      
+      if (querySnapshot.empty) {
+        setLoginError('اسم المستخدم غير موجود');
+        setIsLoggingIn(false);
+        return;
       }
+
+      const userDoc = querySnapshot.docs[0];
+      const userData = userDoc.data() as User;
+
+      if (userData.password === loginData.password) {
+        const userWithId = { ...userData, id: userDoc.id };
+        setCurrentUser(userWithId);
+        localStorage.setItem('inventory_user_id', userDoc.id);
+        setFeedback({ type: 'success', message: 'تم تسجيل الدخول بنجاح' });
+      } else {
+        setLoginError('كلمة المرور غير صحيحة');
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, 'users');
+      setLoginError('حدث خطأ أثناء تسجيل الدخول');
+    } finally {
       setIsLoggingIn(false);
-    }, 800);
+    }
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
-    localStorage.removeItem('smart_inventory_user');
-    setActiveTab('inventory');
+    localStorage.removeItem('inventory_user_id');
     setFeedback({ type: 'info', message: 'تم تسجيل الخروج بنجاح' });
+    setActiveTab('inventory');
   };
 
-  const handleDeleteItem = async (id: string) => {
-    if (currentUser?.role !== 'admin') {
-      setFeedback({ type: 'error', message: 'فقط المدير يمكنه مسح الأصناف' });
+  const handleAddUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUserData.username || !newUserData.password || !newUserData.name) return;
+
+    try {
+      const usersRef = collection(db, 'users');
+      const q = query(usersRef, where('username', '==', newUserData.username));
+      const querySnapshot = await getDocs(q);
+
+      if (!querySnapshot.empty) {
+        setFeedback({ type: 'error', message: 'اسم المستخدم موجود بالفعل' });
+        return;
+      }
+
+      await addDoc(usersRef, newUserData);
+      setFeedback({ type: 'success', message: `تم إضافة المستخدم ${newUserData.name} بنجاح` });
+      setIsAddUserModalOpen(false);
+      setNewUserData({ username: '', password: '', name: '', email: '', role: 'user' });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'users');
+    }
+  };
+
+  const handleEditUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingUser || !editUserData.username || !editUserData.password || !editUserData.name) return;
+
+    try {
+      const userRef = doc(db, 'users', editingUser.id);
+      await updateDoc(userRef, editUserData);
+      
+      // If editing self, update local state
+      if (editingUser.id === currentUser?.id) {
+        setCurrentUser({ ...currentUser, ...editUserData });
+      }
+
+      setFeedback({ type: 'success', message: `تم تحديث بيانات ${editUserData.name} بنجاح` });
+      setIsEditUserModalOpen(false);
+      setEditingUser(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${editingUser.id}`);
+    }
+  };
+
+  const openEditUserModal = (user: User) => {
+    setEditingUser(user);
+    setEditUserData({
+      username: user.username,
+      password: user.password,
+      name: user.name,
+      email: user.email || '',
+      role: user.role
+    });
+    setIsEditUserModalOpen(true);
+  };
+
+  const handleDeleteUser = async (id: string) => {
+    if (id === currentUser?.id) {
+      setFeedback({ type: 'error', message: 'لا يمكنك حذف حسابك الحالي' });
       return;
     }
     try {
-      await deleteDoc(doc(db, 'items', id));
+      await deleteDoc(doc(db, 'users', id));
+      setFeedback({ type: 'success', message: 'تم حذف المستخدم بنجاح' });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, 'users');
+    }
+  };
+
+  const handleDeleteItem = async (id: string) => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      setFeedback({ type: 'error', message: 'فقط المدير يمكنه مسح الأصناف' });
+      return;
+    }
+    const userPath = `users/${currentUser.id}`;
+    try {
+      await deleteDoc(doc(db, userPath, 'items', id));
       setFeedback({ type: 'success', message: 'تم مسح الصنف بنجاح' });
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, 'items');
+      handleFirestoreError(error, OperationType.DELETE, `${userPath}/items`);
     }
   };
 
@@ -442,8 +528,9 @@ export default function App() {
 
   const handleAdjustStock = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!adjustModal.item || adjustQuantity <= 0) return;
+    if (!adjustModal.item || adjustQuantity <= 0 || !currentUser) return;
 
+    const userPath = `users/${currentUser.id}`;
     const amount = adjustModal.type === 'receive' ? adjustQuantity : -adjustQuantity;
     const item = adjustModal.item;
 
@@ -453,21 +540,21 @@ export default function App() {
     }
 
     try {
-      await updateDoc(doc(db, 'items', item.id), { quantity: item.quantity + amount });
+      await updateDoc(doc(db, userPath, 'items', item.id), { quantity: item.quantity + amount });
       
       const newTransaction: Omit<Transaction, 'id'> = {
         itemId: item.id,
         itemName: item.name,
         quantity: Math.abs(amount),
-        user: currentUser?.name || 'مستخدم',
+        user: currentUser.name || 'مستخدم',
         date: format(new Date(), 'yyyy-MM-dd'),
         type: adjustModal.type
       };
-      await addDoc(collection(db, 'transactions'), newTransaction);
+      await addDoc(collection(db, userPath, 'transactions'), newTransaction);
       setFeedback({ type: 'success', message: `تم ${amount > 0 ? 'إضافة' : 'سحب'} ${Math.abs(amount)} ${item.unit}` });
       setAdjustModal({ isOpen: false, item: null, type: 'receive' });
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'items/transactions');
+      handleFirestoreError(error, OperationType.WRITE, `${userPath}/items/transactions`);
     }
   };
 
@@ -479,8 +566,9 @@ export default function App() {
 
   const handleManualAddItem = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newItemData.name) return;
+    if (!newItemData.name || !currentUser) return;
 
+    const userPath = `users/${currentUser.id}`;
     const newItem: Omit<InventoryItem, 'id'> = {
       name: newItemData.name,
       quantity: newItemData.quantity,
@@ -490,12 +578,12 @@ export default function App() {
     };
 
     try {
-      await addDoc(collection(db, 'items'), newItem);
+      await addDoc(collection(db, userPath, 'items'), newItem);
       setIsAddItemModalOpen(false);
       setNewItemData({ name: '', quantity: 0, unit: 'قطعة', lowThreshold: 10, criticalThreshold: 5 });
       setFeedback({ type: 'success', message: `تم إضافة ${newItemData.name} بنجاح` });
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'items');
+      handleFirestoreError(error, OperationType.CREATE, `${userPath}/items`);
     }
   };
 
@@ -506,24 +594,26 @@ export default function App() {
 
   const handleUpdateThresholds = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!thresholdModal.item) return;
+    if (!thresholdModal.item || !currentUser) return;
 
+    const userPath = `users/${currentUser.id}`;
     try {
-      await updateDoc(doc(db, 'items', thresholdModal.item.id), { 
+      await updateDoc(doc(db, userPath, 'items', thresholdModal.item.id), { 
         lowThreshold: thresholdValues.low, 
         criticalThreshold: thresholdValues.critical 
       });
       setThresholdModal({ isOpen: false, item: null });
       setFeedback({ type: 'success', message: `تم تحديث حدود المخزون لـ ${thresholdModal.item.name}` });
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, 'items');
+      handleFirestoreError(error, OperationType.UPDATE, `${userPath}/items`);
     }
   };
 
   const handleManualAddOrder = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newOrderData.item || newOrderData.quantity <= 0) return;
+    if (!newOrderData.item || newOrderData.quantity <= 0 || !currentUser) return;
 
+    const userPath = `users/${currentUser.id}`;
     const newOrder: Omit<Order, 'id'> = {
       item: newOrderData.item,
       quantity: newOrderData.quantity,
@@ -533,35 +623,36 @@ export default function App() {
     };
 
     try {
-      await addDoc(collection(db, 'orders'), newOrder);
+      await addDoc(collection(db, userPath, 'orders'), newOrder);
       setIsAddOrderModalOpen(false);
       setNewOrderData({ item: '', quantity: 1 });
       setFeedback({ type: 'success', message: `تم إنشاء طلبية لـ ${newOrderData.quantity} من ${newOrderData.item}` });
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'orders');
+      handleFirestoreError(error, OperationType.CREATE, `${userPath}/orders`);
     }
   };
 
   const handleReceiveOrder = async (order: Order) => {
-    if (currentUser?.role !== 'admin') {
+    if (!currentUser || currentUser.role !== 'admin') {
       setFeedback({ type: 'error', message: 'فقط المدير يمكنه استلام الطلبيات' });
       return;
     }
 
+    const userPath = `users/${currentUser.id}`;
     try {
       const item = items.find(i => i.name === order.item);
       if (item) {
-        await updateDoc(doc(db, 'items', item.id), { quantity: item.quantity + order.quantity });
+        await updateDoc(doc(db, userPath, 'items', item.id), { quantity: item.quantity + order.quantity });
         
         const newTransaction: Omit<Transaction, 'id'> = {
           itemId: item.id,
           itemName: item.name,
           quantity: order.quantity,
-          user: currentUser?.name || 'أدمن',
+          user: currentUser.name,
           date: format(new Date(), 'yyyy-MM-dd'),
           type: 'receive'
         };
-        await addDoc(collection(db, 'transactions'), newTransaction);
+        await addDoc(collection(db, userPath, 'transactions'), newTransaction);
       } else {
         const newItem: Omit<InventoryItem, 'id'> = {
           name: order.item,
@@ -570,101 +661,16 @@ export default function App() {
           lowThreshold: 10,
           criticalThreshold: 5
         };
-        await addDoc(collection(db, 'items'), newItem);
+        await addDoc(collection(db, userPath, 'items'), newItem);
       }
 
-      await updateDoc(doc(db, 'orders', order.id), { 
+      await updateDoc(doc(db, userPath, 'orders', order.id), { 
         status: 'delivered', 
         delivery_date: format(new Date(), 'yyyy-MM-dd') 
       });
       setFeedback({ type: 'success', message: `تم استلام الطلبية وإضافتها للمخزون: ${order.item}` });
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'items/orders/transactions');
-    }
-  };
-
-  const handleAddUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newUserData.username || !newUserData.password || !newUserData.name) return;
-
-    if (users.some(u => u.username === newUserData.username)) {
-      setFeedback({ type: 'error', message: 'اسم المستخدم موجود بالفعل' });
-      return;
-    }
-
-    const newUser: Omit<User, 'id'> = {
-      ...newUserData
-    };
-
-    try {
-      await addDoc(collection(db, 'users'), newUser);
-      setIsAddUserModalOpen(false);
-      setNewUserData({ username: '', password: '', name: '', email: '', role: 'user' });
-      setFeedback({ type: 'success', message: `تم إضافة المستخدم ${newUserData.name} بنجاح` });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'users');
-    }
-  };
-
-  const handleDeleteUser = async (id: string) => {
-    if (id === currentUser?.id) {
-      setFeedback({ type: 'error', message: 'لا يمكنك مسح حسابك الحالي' });
-      return;
-    }
-    try {
-      await deleteDoc(doc(db, 'users', id));
-      setFeedback({ type: 'success', message: 'تم مسح المستخدم بنجاح' });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, 'users');
-    }
-  };
-
-  const handleChangePassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!currentUser) return;
-
-    if (changePasswordData.current !== currentUser.password) {
-      setFeedback({ type: 'error', message: 'كلمة المرور الحالية غير صحيحة' });
-      return;
-    }
-
-    if (changePasswordData.new !== changePasswordData.confirm) {
-      setFeedback({ type: 'error', message: 'كلمة المرور الجديدة غير متطابقة' });
-      return;
-    }
-
-    if (changePasswordData.new.length < 4) {
-      setFeedback({ type: 'error', message: 'كلمة المرور يجب أن تكون 4 أحرف على الأقل' });
-      return;
-    }
-
-    try {
-      await updateDoc(doc(db, 'users', currentUser.id), { password: changePasswordData.new });
-      
-      // Update current user state as well
-      setCurrentUser(prev => prev ? { ...prev, password: changePasswordData.new } : null);
-      
-      setChangePasswordData({ current: '', new: '', confirm: '' });
-      setFeedback({ type: 'success', message: 'تم تغيير كلمة المرور بنجاح' });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, 'users');
-    }
-  };
-
-  const [adminChangePasswordModal, setAdminChangePasswordModal] = useState<{ isOpen: boolean, user: User | null }>({ isOpen: false, user: null });
-  const [adminNewPassword, setAdminNewPassword] = useState('');
-
-  const handleAdminChangePassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!adminChangePasswordModal.user || !adminNewPassword) return;
-
-    try {
-      await updateDoc(doc(db, 'users', adminChangePasswordModal.user.id), { password: adminNewPassword });
-      setAdminChangePasswordModal({ isOpen: false, user: null });
-      setAdminNewPassword('');
-      setFeedback({ type: 'success', message: `تم تغيير كلمة المرور لـ ${adminChangePasswordModal.user.name} بنجاح` });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, 'users');
+      handleFirestoreError(error, OperationType.WRITE, `${userPath}/items/orders/transactions`);
     }
   };
 
@@ -709,48 +715,6 @@ export default function App() {
           </div>
 
           <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">اسم المستخدم</label>
-              <div className="relative">
-                <input 
-                  type="text"
-                  required
-                  value={loginForm.username}
-                  onChange={(e) => {
-                    setLoginForm(prev => ({ ...prev, username: e.target.value }));
-                    if (loginError) setLoginError('');
-                  }}
-                  className={cn(
-                    "w-full bg-gray-50 border rounded-xl py-3 pr-10 pl-4 focus:ring-2 transition-all",
-                    loginError ? "border-red-300 focus:ring-red-500/20 focus:border-red-500" : "border-gray-200 focus:ring-emerald-500/20 focus:border-emerald-500"
-                  )}
-                  placeholder="أدخل اسم المستخدم"
-                />
-                <UserIcon className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">كلمة المرور</label>
-              <div className="relative">
-                <input 
-                  type="password"
-                  required
-                  value={loginForm.password}
-                  onChange={(e) => {
-                    setLoginForm(prev => ({ ...prev, password: e.target.value }));
-                    if (loginError) setLoginError('');
-                  }}
-                  className={cn(
-                    "w-full bg-gray-50 border rounded-xl py-3 pr-10 pl-4 focus:ring-2 transition-all",
-                    loginError ? "border-red-300 focus:ring-red-500/20 focus:border-red-500" : "border-gray-200 focus:ring-emerald-500/20 focus:border-emerald-500"
-                  )}
-                  placeholder="••••••••"
-                />
-                <Lock className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-              </div>
-            </div>
-
             {loginError && (
               <div className="p-3 bg-red-50 text-red-600 text-sm rounded-xl flex items-center gap-2">
                 <AlertCircle className="w-4 h-4" />
@@ -758,12 +722,49 @@ export default function App() {
               </div>
             )}
 
+            <div className="space-y-2">
+              <label className="text-sm font-bold text-gray-700 block">اسم المستخدم</label>
+              <div className="relative">
+                <input 
+                  type="text"
+                  required
+                  value={loginData.username}
+                  onChange={(e) => setLoginData(prev => ({ ...prev, username: e.target.value }))}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 pr-10 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  placeholder="أدخل اسم المستخدم"
+                />
+                <UserIcon className="w-5 h-5 text-gray-400 absolute right-3 top-1/2 -translate-y-1/2" />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-bold text-gray-700 block">كلمة المرور</label>
+              <div className="relative">
+                <input 
+                  type="password"
+                  required
+                  value={loginData.password}
+                  onChange={(e) => setLoginData(prev => ({ ...prev, password: e.target.value }))}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 pr-10 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  placeholder="••••••••"
+                />
+                <Lock className="w-5 h-5 text-gray-400 absolute right-3 top-1/2 -translate-y-1/2" />
+              </div>
+            </div>
+
             <button 
               type="submit"
               disabled={isLoggingIn}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-emerald-100 flex items-center justify-center gap-2"
+              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-emerald-100 flex items-center justify-center gap-2 mt-6"
             >
-              {isLoggingIn ? <Loader2 className="w-5 h-5 animate-spin" /> : 'تسجيل الدخول'}
+              {isLoggingIn ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <>
+                  <LogOut className="w-5 h-5 rotate-180" />
+                  <span>تسجيل الدخول</span>
+                </>
+              )}
             </button>
           </form>
         </motion.div>
@@ -865,7 +866,7 @@ export default function App() {
             { id: 'reports', label: 'التقارير', icon: BarChart3, roles: ['admin', 'observer'] },
             { id: 'users', label: 'المستخدمين', icon: UserIcon, roles: ['admin'] },
             { id: 'settings', label: 'الإعدادات', icon: Settings, roles: ['admin', 'user', 'observer'] },
-          ].filter(tab => tab.roles.includes(currentUser.role)).map((tab) => (
+          ].filter(tab => tab.roles.includes(currentUser?.role || 'user')).map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
@@ -1444,7 +1445,7 @@ export default function App() {
               </motion.div>
             )}
 
-            {activeTab === 'users' && currentUser.role === 'admin' && (
+            {activeTab === 'users' && currentUser?.role === 'admin' && (
               <motion.div 
                 key="users"
                 initial={{ opacity: 0, x: 20 }}
@@ -1453,57 +1454,67 @@ export default function App() {
                 className="space-y-6"
               >
                 <div className="flex items-center justify-between">
-                  <h3 className="text-xl font-bold text-gray-900">إدارة المستخدمين</h3>
+                  <div>
+                    <h3 className="text-2xl font-black text-gray-900">إدارة المستخدمين</h3>
+                    <p className="text-gray-500">إضافة وحذف وتعديل صلاحيات الموظفين</p>
+                  </div>
                   <button 
                     onClick={() => setIsAddUserModalOpen(true)}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl transition-all shadow-lg shadow-emerald-100 flex items-center gap-2"
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-2xl font-bold transition-all shadow-lg shadow-emerald-100 flex items-center gap-2"
                   >
                     <UserPlus className="w-5 h-5" />
-                    إضافة مستخدم
+                    <span>إضافة مستخدم</span>
                   </button>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {users.map((user) => (
-                    <div key={user.id} className="bg-white p-5 rounded-3xl border border-gray-200 shadow-sm hover:shadow-md transition-all group">
-                      <div className="flex items-start justify-between mb-4">
-                        <div className="w-12 h-12 bg-gray-50 rounded-2xl flex items-center justify-center group-hover:bg-emerald-50 transition-colors">
-                          <UserIcon className="text-gray-400 group-hover:text-emerald-500 transition-colors w-6 h-6" />
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className={cn(
-                            "text-[10px] px-2 py-0.5 rounded-full font-medium uppercase tracking-wider",
-                            user.role === 'admin' ? "bg-emerald-100 text-emerald-700" : 
-                            user.role === 'user' ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
-                          )}>
-                            {user.role === 'admin' ? 'مدير' : 
-                             user.role === 'user' ? 'موظف' : 'مراقب'}
-                          </span>
-                          {user.id !== currentUser.id && (
-                            <div className="flex items-center gap-1">
+                <div className="bg-white rounded-3xl border border-gray-200 shadow-sm overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-right">
+                      <thead>
+                        <tr className="border-b border-gray-100 bg-gray-50/50">
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">الاسم</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">اسم المستخدم</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">الدور</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">الإجراءات</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {users.map(user => (
+                          <tr key={user.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
+                            <td className="px-6 py-4 font-bold text-gray-900">{user.name}</td>
+                            <td className="px-6 py-4 text-gray-500">{user.username}</td>
+                            <td className="px-6 py-4">
+                              <span className={cn(
+                                "text-[10px] px-2 py-0.5 rounded-full font-medium uppercase tracking-wider",
+                                user.role === 'admin' ? "bg-emerald-100 text-emerald-700" : 
+                                user.role === 'user' ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
+                              )}>
+                                {user.role === 'admin' ? 'مدير' : 
+                                 user.role === 'user' ? 'موظف' : 'مراقب'}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 flex items-center gap-2">
                               <button 
-                                onClick={() => setAdminChangePasswordModal({ isOpen: true, user })}
-                                className="p-1 text-gray-300 hover:text-indigo-500 transition-colors"
-                                title="تغيير كلمة المرور"
+                                onClick={() => openEditUserModal(user)}
+                                className="p-2 text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 rounded-xl transition-all"
+                                title="تعديل"
                               >
-                                <Lock className="w-4 h-4" />
+                                <Edit2 className="w-5 h-5" />
                               </button>
                               <button 
                                 onClick={() => handleDeleteUser(user.id)}
-                                className="p-1 text-gray-300 hover:text-red-500 transition-colors"
-                                title="حذف المستخدم"
+                                disabled={user.id === currentUser.id}
+                                className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all disabled:opacity-30 disabled:hover:bg-transparent"
+                                title="حذف"
                               >
-                                <Trash2 className="w-4 h-4" />
+                                <Trash2 className="w-5 h-5" />
                               </button>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      <h4 className="font-bold text-gray-900 mb-1">{user.name}</h4>
-                      <p className="text-sm text-gray-500 mb-2">@{user.username}</p>
-                      <p className="text-xs text-gray-400">{user.email}</p>
-                    </div>
-                  ))}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </motion.div>
             )}
@@ -1517,78 +1528,50 @@ export default function App() {
                 className="max-w-2xl mx-auto"
               >
                 <div className="bg-white rounded-3xl border border-gray-200 shadow-sm overflow-hidden">
-                  <div className="p-6 border-b border-gray-100">
-                    <h3 className="text-xl font-bold text-gray-900">إعدادات الحساب</h3>
-                    <p className="text-sm text-gray-500">تغيير كلمة المرور وتحديث بياناتك</p>
+                  <div className="p-6 border-b border-gray-100 flex items-center justify-between">
+                    <div>
+                      <h3 className="text-xl font-bold text-gray-900">إعدادات الحساب</h3>
+                      <p className="text-sm text-gray-500">بيانات حسابك الشخصي</p>
+                    </div>
+                    <button 
+                      onClick={() => openEditUserModal(currentUser)}
+                      className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-xl transition-all flex items-center gap-2"
+                      title="تعديل البيانات"
+                    >
+                      <Edit2 className="w-5 h-5" />
+                      <span className="text-sm font-bold">تعديل</span>
+                    </button>
                   </div>
-                  <form onSubmit={handleChangePassword} className="p-6 space-y-6">
+                  <div className="p-6 space-y-6">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                       <div className="space-y-2">
                         <label className="text-sm font-bold text-gray-700">الاسم</label>
-                        <input 
-                          type="text" 
-                          disabled 
-                          value={currentUser.name}
-                          className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 text-gray-500 cursor-not-allowed"
-                        />
+                        <div className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 text-gray-900">
+                          {currentUser.name}
+                        </div>
                       </div>
                       <div className="space-y-2">
                         <label className="text-sm font-bold text-gray-700">اسم المستخدم</label>
-                        <input 
-                          type="text" 
-                          disabled 
-                          value={currentUser.username}
-                          className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 text-gray-500 cursor-not-allowed"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="space-y-4 pt-4 border-t border-gray-100">
-                      <h4 className="font-bold text-gray-900">تغيير كلمة المرور</h4>
-                      <div className="space-y-2">
-                        <label className="text-sm font-bold text-gray-700">كلمة المرور الحالية</label>
-                        <input 
-                          type="password" 
-                          required
-                          value={changePasswordData.current}
-                          onChange={(e) => setChangePasswordData(prev => ({ ...prev, current: e.target.value }))}
-                          className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-                          placeholder="أدخل كلمة المرور الحالية"
-                        />
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <label className="text-sm font-bold text-gray-700">كلمة المرور الجديدة</label>
-                          <input 
-                            type="password" 
-                            required
-                            value={changePasswordData.new}
-                            onChange={(e) => setChangePasswordData(prev => ({ ...prev, new: e.target.value }))}
-                            className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-                            placeholder="أدخل كلمة المرور الجديدة"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-sm font-bold text-gray-700">تأكيد كلمة المرور</label>
-                          <input 
-                            type="password" 
-                            required
-                            value={changePasswordData.confirm}
-                            onChange={(e) => setChangePasswordData(prev => ({ ...prev, confirm: e.target.value }))}
-                            className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-                            placeholder="تأكيد كلمة المرور الجديدة"
-                          />
+                        <div className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 text-gray-900">
+                          {currentUser.username}
                         </div>
                       </div>
                     </div>
 
-                    <button 
-                      type="submit"
-                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-emerald-100"
-                    >
-                      حفظ التغييرات
-                    </button>
-                  </form>
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-gray-700">الدور الوظيفي</label>
+                      <div className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 text-gray-900">
+                        {currentUser.role === 'admin' ? 'مدير النظام' : 
+                         currentUser.role === 'user' ? 'موظف' : 'مراقب'}
+                      </div>
+                    </div>
+
+                    <div className="pt-6 border-t border-gray-100">
+                      <p className="text-xs text-gray-400 text-center">
+                        نظام إدارة المخزون v2.0 - تسجيل دخول محلي
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </motion.div>
             )}
@@ -1608,39 +1591,87 @@ export default function App() {
         </div>
       </footer>
 
-      {/* Admin Change Password Modal */}
+      {/* Edit User Modal */}
       <AnimatePresence>
-        {adminChangePasswordModal.isOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+        {isEditUserModalOpen && editingUser && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsEditUserModalOpen(false)}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl p-8 overflow-hidden"
             >
-              <div className="p-6 border-b border-gray-100 flex items-center justify-between">
-                <h3 className="text-xl font-bold text-gray-900">تغيير كلمة المرور لـ {adminChangePasswordModal.user?.name}</h3>
-                <button onClick={() => setAdminChangePasswordModal({ isOpen: false, user: null })} className="p-2 hover:bg-gray-100 rounded-xl transition-colors">
-                  <X className="w-5 h-5 text-gray-400" />
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xl font-bold text-gray-900">تعديل بيانات المستخدم</h3>
+                <button 
+                  onClick={() => setIsEditUserModalOpen(false)}
+                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-xl transition-all"
+                >
+                  <X className="w-5 h-5" />
                 </button>
               </div>
-              <form onSubmit={handleAdminChangePassword} className="p-6 space-y-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-gray-700">كلمة المرور الجديدة</label>
+
+              <form onSubmit={handleEditUser} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">الاسم الكامل</label>
                   <input 
-                    type="password" 
+                    type="text"
                     required
-                    value={adminNewPassword}
-                    onChange={(e) => setAdminNewPassword(e.target.value)}
+                    value={editUserData.name}
+                    onChange={(e) => setEditUserData(prev => ({ ...prev, name: e.target.value }))}
                     className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-                    placeholder="••••••••"
                   />
                 </div>
+
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">اسم المستخدم</label>
+                  <input 
+                    type="text"
+                    required
+                    value={editUserData.username}
+                    onChange={(e) => setEditUserData(prev => ({ ...prev, username: e.target.value }))}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">كلمة المرور</label>
+                  <input 
+                    type="text"
+                    required
+                    value={editUserData.password}
+                    onChange={(e) => setEditUserData(prev => ({ ...prev, password: e.target.value }))}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">الدور الوظيفي</label>
+                  <select 
+                    required
+                    disabled={currentUser.role !== 'admin'}
+                    value={editUserData.role}
+                    onChange={(e) => setEditUserData(prev => ({ ...prev, role: e.target.value as any }))}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <option value="user">موظف (سحب فقط)</option>
+                    <option value="admin">مدير (صلاحيات كاملة)</option>
+                    <option value="observer">مراقب (عرض فقط)</option>
+                  </select>
+                </div>
+
                 <button 
                   type="submit"
-                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-indigo-100"
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-emerald-100 mt-4"
                 >
-                  تحديث كلمة المرور
+                  حفظ التغييرات
                 </button>
               </form>
             </motion.div>
@@ -1651,24 +1682,35 @@ export default function App() {
       {/* Add User Modal */}
       <AnimatePresence>
         {isAddUserModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsAddUserModalOpen(false)}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl p-8 overflow-hidden"
             >
-              <div className="p-6 border-b border-gray-100 flex items-center justify-between">
+              <div className="flex items-center justify-between mb-6">
                 <h3 className="text-xl font-bold text-gray-900">إضافة مستخدم جديد</h3>
-                <button onClick={() => setIsAddUserModalOpen(false)} className="p-2 hover:bg-gray-100 rounded-xl transition-colors">
-                  <X className="w-5 h-5 text-gray-400" />
+                <button 
+                  onClick={() => setIsAddUserModalOpen(false)}
+                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-xl transition-all"
+                >
+                  <X className="w-5 h-5" />
                 </button>
               </div>
-              <form onSubmit={handleAddUser} className="p-6 space-y-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-gray-700">الاسم الكامل</label>
+
+              <form onSubmit={handleAddUser} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">الاسم الكامل</label>
                   <input 
-                    type="text" 
+                    type="text"
                     required
                     value={newUserData.name}
                     onChange={(e) => setNewUserData(prev => ({ ...prev, name: e.target.value }))}
@@ -1676,21 +1718,23 @@ export default function App() {
                     placeholder="مثلاً: أحمد محمد"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-gray-700">اسم المستخدم</label>
+
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">اسم المستخدم</label>
                   <input 
-                    type="text" 
+                    type="text"
                     required
                     value={newUserData.username}
                     onChange={(e) => setNewUserData(prev => ({ ...prev, username: e.target.value }))}
                     className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-                    placeholder="مثلاً: ahmed123"
+                    placeholder="اسم الدخول"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-gray-700">كلمة المرور</label>
+
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">كلمة المرور</label>
                   <input 
-                    type="password" 
+                    type="password"
                     required
                     value={newUserData.password}
                     onChange={(e) => setNewUserData(prev => ({ ...prev, password: e.target.value }))}
@@ -1698,42 +1742,32 @@ export default function App() {
                     placeholder="••••••••"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-gray-700">البريد الإلكتروني</label>
-                  <input 
-                    type="email" 
-                    required
-                    value={newUserData.email}
-                    onChange={(e) => setNewUserData(prev => ({ ...prev, email: e.target.value }))}
-                    className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-                    placeholder="example@mail.com"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-gray-700">الصلاحية</label>
+
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">الدور الوظيفي</label>
                   <select 
+                    required
                     value={newUserData.role}
-                    onChange={(e) => setNewUserData(prev => ({ ...prev, role: e.target.value as UserRole }))}
+                    onChange={(e) => setNewUserData(prev => ({ ...prev, role: e.target.value as any }))}
                     className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
                   >
-                    <option value="user">موظف</option>
-                    <option value="observer">مراقب</option>
-                    <option value="admin">مدير</option>
+                    <option value="user">موظف (سحب فقط)</option>
+                    <option value="admin">مدير (صلاحيات كاملة)</option>
+                    <option value="observer">مراقب (عرض فقط)</option>
                   </select>
                 </div>
+
                 <button 
                   type="submit"
-                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-emerald-100"
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-emerald-100 mt-4"
                 >
-                  إضافة المستخدم
+                  إنشاء الحساب
                 </button>
               </form>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
-
-      {/* Add Item Modal */}
       <AnimatePresence>
         {isAddItemModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

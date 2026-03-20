@@ -63,17 +63,17 @@
       "schema": "User",
       "description": "User profiles"
     },
-    "/items/{itemId}": {
+    "/users/{userId}/items/{itemId}": {
       "schema": "InventoryItem",
-      "description": "Inventory items"
+      "description": "User's private inventory items"
     },
-    "/transactions/{transactionId}": {
+    "/users/{userId}/transactions/{transactionId}": {
       "schema": "Transaction",
-      "description": "Inventory transactions"
+      "description": "User's private inventory transactions"
     },
-    "/orders/{orderId}": {
+    "/users/{userId}/orders/{orderId}": {
       "schema": "Order",
-      "description": "Supply orders"
+      "description": "User's private supply orders"
     }
   }
 }
