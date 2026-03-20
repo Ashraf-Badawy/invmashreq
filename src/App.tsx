@@ -151,7 +151,7 @@ export default function App() {
           await addDoc(usersRef, {
             username: 'ashraf',
             password: '11111',
-            name: 'أشرف',
+            name: 'Ashraf',
             email: 'AshrafBadawy33@gmail.com',
             role: 'admin'
           });
@@ -710,8 +710,8 @@ export default function App() {
             <div className="w-20 h-20 bg-emerald-500 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-emerald-200">
               <Package className="text-white w-10 h-10" />
             </div>
-            <h1 className="text-3xl font-bold text-gray-900 mb-2">نظام المخزون الذكي</h1>
-            <p className="text-gray-500">سجل دخولك للبدء في إدارة مخزنك</p>
+            <h1 className="text-3xl font-bold text-gray-900 mb-2">Al-Mashreq Inv</h1>
+            <p className="text-gray-900 text-[23px] font-bold">Hi, Ashraf</p>
           </div>
 
           <form onSubmit={handleLogin} className="space-y-4">
@@ -781,14 +781,14 @@ export default function App() {
               <Package className="text-white w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-gray-900">المخزون الذكي</h2>
+              <h2 className="text-lg font-bold text-gray-900">Al-Mashreq Inv</h2>
               <p className="text-xs text-gray-500">نظام إدارة مدعوم بالذكاء الاصطناعي</p>
             </div>
           </div>
 
           <div className="flex items-center gap-4">
             <div className="hidden sm:flex flex-col items-end">
-              <span className="text-sm font-bold text-gray-900">{currentUser.name}</span>
+              <span className="text-sm font-bold text-gray-900">Hi, {currentUser.name}</span>
               <span className={cn(
                 "text-[10px] px-2 py-0.5 rounded-full font-medium uppercase tracking-wider",
                 currentUser.role === 'admin' ? "bg-emerald-100 text-emerald-700" : 
