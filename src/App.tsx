@@ -163,15 +163,15 @@ export default function App() {
     };
     checkInitialAdmin();
 
-    const savedUserId = localStorage.getItem('inventory_user_id');
+    const savedUserId = sessionStorage.getItem('inventory_user_id');
     if (savedUserId) {
       const fetchUser = async () => {
         try {
           const userDoc = await getDoc(doc(db, 'users', savedUserId));
           if (userDoc.exists()) {
-            setCurrentUser(userDoc.data() as User);
+            setCurrentUser({ ...userDoc.data(), id: userDoc.id } as User);
           } else {
-            localStorage.removeItem('inventory_user_id');
+            sessionStorage.removeItem('inventory_user_id');
           }
         } catch (error) {
           console.error("Error fetching user:", error);
@@ -184,6 +184,39 @@ export default function App() {
       setIsAuthReady(true);
     }
   }, []);
+
+  // Auto Logout after 5 minutes of inactivity
+  useEffect(() => {
+    if (!currentUser) return;
+
+    let inactivityTimer: NodeJS.Timeout;
+
+    const logoutSilently = () => {
+      setCurrentUser(null);
+      sessionStorage.removeItem('inventory_user_id');
+      setActiveTab('inventory');
+    };
+
+    const resetTimer = () => {
+      if (inactivityTimer) clearTimeout(inactivityTimer);
+      inactivityTimer = setTimeout(logoutSilently, 5 * 60 * 1000); // 5 minutes
+    };
+
+    const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'];
+    
+    events.forEach(event => {
+      window.addEventListener(event, resetTimer);
+    });
+
+    resetTimer();
+
+    return () => {
+      if (inactivityTimer) clearTimeout(inactivityTimer);
+      events.forEach(event => {
+        window.removeEventListener(event, resetTimer);
+      });
+    };
+  }, [currentUser]);
 
   useEffect(() => {
     if (!currentUser) {
@@ -418,7 +451,7 @@ export default function App() {
       if (userData.password === loginData.password) {
         const userWithId = { ...userData, id: userDoc.id };
         setCurrentUser(userWithId);
-        localStorage.setItem('inventory_user_id', userDoc.id);
+        sessionStorage.setItem('inventory_user_id', userDoc.id);
         setFeedback({ type: 'success', message: 'تم تسجيل الدخول بنجاح' });
       } else {
         setLoginError('كلمة المرور غير صحيحة');
@@ -433,7 +466,7 @@ export default function App() {
 
   const handleLogout = () => {
     setCurrentUser(null);
-    localStorage.removeItem('inventory_user_id');
+    sessionStorage.removeItem('inventory_user_id');
     setFeedback({ type: 'info', message: 'تم تسجيل الخروج بنجاح' });
     setActiveTab('inventory');
   };
