@@ -124,11 +124,12 @@ export default function App() {
   const ITEMS_PER_PAGE = 100;
   const [isAddItemModalOpen, setIsAddItemModalOpen] = useState(false);
   const [isAddOrderModalOpen, setIsAddOrderModalOpen] = useState(false);
-  const [adjustModal, setAdjustModal] = useState<{ isOpen: boolean, item: InventoryItem | null, type: 'receive' | 'withdraw' }>({ 
+  const [adjustModal, setAdjustModal] = useState<{ isOpen: boolean, item: InventoryItem | null, type: 'receive' | 'withdraw' | 'return' }>({ 
     isOpen: false, 
     item: null, 
     type: 'receive' 
   });
+  const [historyModal, setHistoryModal] = useState<{ isOpen: boolean, item: InventoryItem | null }>({ isOpen: false, item: null });
   const [adjustQuantity, setAdjustQuantity] = useState(1);
   const [newItemData, setNewItemData] = useState({ name: '', quantity: 0, unit: 'قطعة', lowThreshold: 10, criticalThreshold: 5 });
   const [thresholdModal, setThresholdModal] = useState<{ isOpen: boolean, item: InventoryItem | null }>({ isOpen: false, item: null });
@@ -367,6 +368,33 @@ export default function App() {
         }
         break;
 
+      case 'return_item':
+        if (action.item && action.quantity) {
+          const item = items.find(i => i.name.includes(action.item!) || action.item!.includes(i.name));
+          if (item) {
+            try {
+              const newQuantity = item.quantity + action.quantity!;
+              await updateDoc(doc(db, userPath, 'items', item.id), { quantity: newQuantity });
+              const newTransaction: Omit<Transaction, 'id'> = {
+                itemId: item.id,
+                itemName: item.name,
+                quantity: action.quantity,
+                user: currentUser.name || 'مستخدم',
+                date: action.date || format(new Date(), 'yyyy-MM-dd'),
+                type: 'return'
+              };
+              await addDoc(collection(db, userPath, 'transactions'), newTransaction);
+              setFeedback({ type: 'success', message: `تم إرجاع ${action.quantity} ${item.unit} إلى ${item.name}` });
+              setActiveTab('transactions');
+            } catch (error) {
+              handleFirestoreError(error, OperationType.WRITE, `${userPath}/items/transactions`);
+            }
+          } else {
+            setFeedback({ type: 'error', message: `الصنف "${action.item}" غير موجود.` });
+          }
+        }
+        break;
+
       case 'create_order':
         if (action.item && action.quantity) {
           const newOrder: Omit<Order, 'id'> = {
@@ -580,7 +608,7 @@ export default function App() {
     }
   };
 
-  const handleOpenAdjustModal = (item: InventoryItem, type: 'receive' | 'withdraw') => {
+  const handleOpenAdjustModal = (item: InventoryItem, type: 'receive' | 'withdraw' | 'return') => {
     setAdjustModal({ isOpen: true, item, type });
     setAdjustQuantity(1);
   };
@@ -590,7 +618,7 @@ export default function App() {
     if (!adjustModal.item || adjustQuantity <= 0 || !currentUser) return;
 
     const userPath = `users/${currentUser.id}`;
-    const amount = adjustModal.type === 'receive' ? adjustQuantity : -adjustQuantity;
+    const amount = adjustModal.type === 'withdraw' ? -adjustQuantity : adjustQuantity;
     const item = adjustModal.item;
 
     if (amount < 0 && item.quantity + amount < 0) {
@@ -612,7 +640,7 @@ export default function App() {
       };
       await addDoc(collection(db, userPath, 'transactions'), newTransaction);
       
-      let feedbackMessage = `تم ${amount > 0 ? 'إضافة' : 'سحب'} ${Math.abs(amount)} ${item.unit}`;
+      let feedbackMessage = `تم ${adjustModal.type === 'receive' ? 'إضافة' : adjustModal.type === 'withdraw' ? 'سحب' : 'إرجاع'} ${Math.abs(amount)} ${item.unit}`;
       let feedbackType: 'success' | 'error' | 'info' = 'success';
       
       if (amount < 0) {
@@ -1036,7 +1064,10 @@ export default function App() {
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {paginatedItems.map((item) => (
                       <div key={item.id} className="bg-white p-5 rounded-3xl border border-gray-200 shadow-sm hover:shadow-md transition-all group">
-                        <div className="flex items-start justify-between mb-4">
+                        <div 
+                          className="flex items-start justify-between mb-4 cursor-pointer"
+                          onClick={() => setHistoryModal({ isOpen: true, item })}
+                        >
                           <div className="w-12 h-12 bg-gray-50 rounded-2xl flex items-center justify-center group-hover:bg-emerald-50 transition-colors">
                             <Package className="text-gray-400 group-hover:text-emerald-500 transition-colors w-6 h-6" />
                           </div>
@@ -1052,14 +1083,14 @@ export default function App() {
                             {currentUser.role === 'admin' && (
                               <div className="flex items-center gap-1">
                                 <button 
-                                  onClick={() => handleOpenThresholdModal(item)}
+                                  onClick={(e) => { e.stopPropagation(); handleOpenThresholdModal(item); }}
                                   className="p-1 text-gray-300 hover:text-indigo-500 transition-colors"
                                   title="تعديل حدود المخزون"
                                 >
                                   <Edit2 className="w-4 h-4" />
                                 </button>
                                 <button 
-                                  onClick={() => handleDeleteItem(item.id)}
+                                  onClick={(e) => { e.stopPropagation(); handleDeleteItem(item.id); }}
                                   className="p-1 text-gray-300 hover:text-red-500 transition-colors"
                                 >
                                   <Trash2 className="w-4 h-4" />
@@ -1068,7 +1099,12 @@ export default function App() {
                             )}
                           </div>
                         </div>
-                        <h4 className="font-bold text-gray-900 mb-1">{item.name}</h4>
+                        <h4 
+                          className="font-bold text-gray-900 mb-1 cursor-pointer hover:text-emerald-600 transition-colors"
+                          onClick={() => setHistoryModal({ isOpen: true, item })}
+                        >
+                          {item.name}
+                        </h4>
                         <div className="flex items-end justify-between">
                           <div>
                             <span className="text-2xl font-black text-gray-900">{item.quantity}</span>
@@ -1079,14 +1115,23 @@ export default function App() {
                               <button 
                                 onClick={() => handleOpenAdjustModal(item, 'receive')}
                                 className="p-2 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                                title="إيداع"
                               >
                                 <Plus className="w-4 h-4" />
                               </button>
                               <button 
                                 onClick={() => handleOpenAdjustModal(item, 'withdraw')}
                                 className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                title="سحب"
                               >
                                 <Minus className="w-4 h-4" />
+                              </button>
+                              <button 
+                                onClick={() => handleOpenAdjustModal(item, 'return')}
+                                className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                title="مرتجع"
+                              >
+                                <History className="w-4 h-4" />
                               </button>
                             </div>
                           )}
@@ -1110,11 +1155,14 @@ export default function App() {
                           {paginatedItems.map((item) => (
                             <tr key={item.id} className="hover:bg-gray-50 transition-colors group">
                               <td className="px-6 py-4">
-                                <div className="flex items-center gap-3">
+                                <div 
+                                  className="flex items-center gap-3 cursor-pointer group/item"
+                                  onClick={() => setHistoryModal({ isOpen: true, item })}
+                                >
                                   <div className="w-8 h-8 bg-gray-50 rounded-lg flex items-center justify-center group-hover:bg-emerald-50 transition-colors">
                                     <Package className="text-gray-400 group-hover:text-emerald-500 w-4 h-4" />
                                   </div>
-                                  <span className="font-bold text-gray-900">{item.name}</span>
+                                  <span className="font-bold text-gray-900 group-hover/item:text-emerald-600 transition-colors">{item.name}</span>
                                 </div>
                               </td>
                               <td className="px-6 py-4">
@@ -1132,39 +1180,51 @@ export default function App() {
                                 </span>
                               </td>
                               <td className="px-6 py-4 text-left">
-                                {currentUser.role !== 'observer' && (
-                                  <div className="flex items-center justify-end gap-2">
-                                    <button 
-                                      onClick={() => handleOpenAdjustModal(item, 'receive')}
-                                      className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
-                                    >
-                                      <Plus className="w-4 h-4" />
-                                    </button>
-                                    <button 
-                                      onClick={() => handleOpenAdjustModal(item, 'withdraw')}
-                                      className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                                    >
-                                      <Minus className="w-4 h-4" />
-                                    </button>
-                                    {currentUser.role === 'admin' && (
-                                      <>
-                                        <button 
-                                          onClick={() => handleOpenThresholdModal(item)}
-                                          className="p-1.5 text-gray-300 hover:text-indigo-500 hover:bg-indigo-50 rounded-lg transition-colors"
-                                          title="تعديل حدود المخزون"
-                                        >
-                                          <Edit2 className="w-4 h-4" />
-                                        </button>
-                                        <button 
-                                          onClick={() => handleDeleteItem(item.id)}
-                                          className="p-1.5 text-gray-300 hover:text-red-500 transition-colors"
-                                        >
-                                          <Trash2 className="w-4 h-4" />
-                                        </button>
-                                      </>
-                                    )}
-                                  </div>
-                                )}
+                                <div className="flex items-center justify-end gap-2">
+                                  {currentUser.role !== 'observer' && (
+                                    <>
+                                      <button 
+                                        onClick={() => handleOpenAdjustModal(item, 'receive')}
+                                        className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                                        title="إيداع"
+                                      >
+                                        <Plus className="w-4 h-4" />
+                                      </button>
+                                      <button 
+                                        onClick={() => handleOpenAdjustModal(item, 'withdraw')}
+                                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                        title="سحب"
+                                      >
+                                        <Minus className="w-4 h-4" />
+                                      </button>
+                                      <button 
+                                        onClick={() => handleOpenAdjustModal(item, 'return')}
+                                        className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                        title="مرتجع"
+                                      >
+                                        <History className="w-4 h-4" />
+                                      </button>
+                                    </>
+                                  )}
+                                  {currentUser.role === 'admin' && (
+                                    <>
+                                      <button 
+                                        onClick={() => handleOpenThresholdModal(item)}
+                                        className="p-1.5 text-gray-300 hover:text-indigo-500 hover:bg-indigo-50 rounded-lg transition-colors"
+                                        title="تعديل حدود المخزون"
+                                      >
+                                        <Edit2 className="w-4 h-4" />
+                                      </button>
+                                      <button 
+                                        onClick={() => handleDeleteItem(item.id)}
+                                        className="p-1.5 text-gray-300 hover:text-red-500 transition-colors"
+                                        title="حذف"
+                                      >
+                                        <Trash2 className="w-4 h-4" />
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
                               </td>
                             </tr>
                           ))}
@@ -2068,13 +2128,16 @@ export default function App() {
                 <div className="flex items-center gap-3">
                   <div className={cn(
                     "w-10 h-10 rounded-xl flex items-center justify-center",
-                    adjustModal.type === 'receive' ? "bg-emerald-100 text-emerald-600" : "bg-red-100 text-red-600"
+                    adjustModal.type === 'receive' ? "bg-emerald-100 text-emerald-600" : 
+                    adjustModal.type === 'withdraw' ? "bg-red-100 text-red-600" : "bg-blue-100 text-blue-600"
                   )}>
-                    {adjustModal.type === 'receive' ? <ArrowDownRight className="w-6 h-6" /> : <ArrowUpRight className="w-6 h-6" />}
+                    {adjustModal.type === 'receive' ? <ArrowDownRight className="w-6 h-6" /> : 
+                     adjustModal.type === 'withdraw' ? <ArrowUpRight className="w-6 h-6" /> : <History className="w-6 h-6" />}
                   </div>
                   <div>
                     <h3 className="text-xl font-bold text-gray-900">
-                      {adjustModal.type === 'receive' ? 'إيداع مخزون' : 'سحب مخزون'}
+                      {adjustModal.type === 'receive' ? 'إيداع مخزون' : 
+                       adjustModal.type === 'withdraw' ? 'سحب مخزون' : 'إرجاع مخزون'}
                     </h3>
                     <p className="text-xs text-gray-500">{adjustModal.item.name}</p>
                   </div>
@@ -2089,7 +2152,9 @@ export default function App() {
 
               <form onSubmit={handleAdjustStock} className="space-y-6">
                 <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-2">الكمية المراد {adjustModal.type === 'receive' ? 'إيداعها' : 'سحبها'}</label>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">
+                    الكمية المراد {adjustModal.type === 'receive' ? 'إيداعها' : adjustModal.type === 'withdraw' ? 'سحبها' : 'إرجاعها'}
+                  </label>
                   <div className="flex items-center gap-4">
                     <button 
                       type="button"
@@ -2123,12 +2188,142 @@ export default function App() {
                   type="submit"
                   className={cn(
                     "w-full text-white font-bold py-4 rounded-xl transition-all shadow-lg mt-4",
-                    adjustModal.type === 'receive' ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-100" : "bg-red-600 hover:bg-red-700 shadow-red-100"
+                    adjustModal.type === 'receive' ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-100" : 
+                    adjustModal.type === 'withdraw' ? "bg-red-600 hover:bg-red-700 shadow-red-100" : "bg-blue-600 hover:bg-blue-700 shadow-blue-100"
                   )}
                 >
                   تأكيد العملية
                 </button>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Item History Modal */}
+      <AnimatePresence>
+        {historyModal.isOpen && historyModal.item && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setHistoryModal({ isOpen: false, item: null })}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-4xl bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+            >
+              <div className="p-8 border-b border-gray-100 flex items-center justify-between bg-white sticky top-0 z-10">
+                <div>
+                  <h3 className="text-2xl font-black text-gray-900">سجل عمليات: {historyModal.item.name}</h3>
+                  <p className="text-gray-500">تفاصيل السحب والاستلام والمرتجع</p>
+                </div>
+                <button 
+                  onClick={() => setHistoryModal({ isOpen: false, item: null })}
+                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-xl transition-all"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="p-8 overflow-y-auto flex-1 space-y-8">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="bg-red-50 p-6 rounded-3xl border border-red-100">
+                    <p className="text-sm text-red-600 font-bold mb-1">إجمالي السحب</p>
+                    <h4 className="text-3xl font-black text-red-700">
+                      {transactions
+                        .filter(t => t.itemId === historyModal.item?.id && t.type === 'withdraw')
+                        .reduce((sum, t) => sum + t.quantity, 0)}
+                    </h4>
+                  </div>
+                  <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100">
+                    <p className="text-sm text-emerald-600 font-bold mb-1">إجمالي الاستلام</p>
+                    <h4 className="text-3xl font-black text-emerald-700">
+                      {transactions
+                        .filter(t => t.itemId === historyModal.item?.id && t.type === 'receive')
+                        .reduce((sum, t) => sum + t.quantity, 0)}
+                    </h4>
+                  </div>
+                  <div className="bg-blue-50 p-6 rounded-3xl border border-blue-100">
+                    <p className="text-sm text-blue-600 font-bold mb-1">إجمالي المرتجع</p>
+                    <h4 className="text-3xl font-black text-blue-700">
+                      {transactions
+                        .filter(t => t.itemId === historyModal.item?.id && t.type === 'return')
+                        .reduce((sum, t) => sum + t.quantity, 0)}
+                    </h4>
+                  </div>
+                </div>
+
+                <div className="bg-gray-50 p-6 rounded-3xl border border-gray-200">
+                  <div className="flex items-center justify-between mb-4">
+                    <h4 className="text-lg font-bold text-gray-900">الكمية النهائية الحالية</h4>
+                    <span className="text-2xl font-black text-emerald-600">{historyModal.item.quantity} {historyModal.item.unit}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h4 className="text-lg font-bold text-gray-900">تاريخ العمليات</h4>
+                  <div className="bg-white border border-gray-200 rounded-3xl overflow-hidden">
+                    <table className="w-full text-right">
+                      <thead>
+                        <tr className="bg-gray-50 border-b border-gray-100">
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">التاريخ</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">النوع</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">الكمية</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">المستخدم</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {transactions
+                          .filter(t => t.itemId === historyModal.item?.id)
+                          .map(t => (
+                            <tr key={t.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
+                              <td className="px-6 py-4 text-gray-500 font-medium">{t.date}</td>
+                              <td className="px-6 py-4">
+                                <span className={cn(
+                                  "text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider",
+                                  t.type === 'receive' ? "bg-emerald-100 text-emerald-700" : 
+                                  t.type === 'withdraw' ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"
+                                )}>
+                                  {t.type === 'receive' ? 'استلام' : 
+                                   t.type === 'withdraw' ? 'سحب' : 'مرتجع'}
+                                </span>
+                              </td>
+                              <td className={cn(
+                                "px-6 py-4 font-black",
+                                t.type === 'receive' ? "text-emerald-600" : 
+                                t.type === 'withdraw' ? "text-red-600" : "text-blue-600"
+                              )}>
+                                {t.type === 'withdraw' ? '-' : '+'}{t.quantity}
+                              </td>
+                              <td className="px-6 py-4 text-gray-900 font-bold">{t.user}</td>
+                            </tr>
+                          ))}
+                        {transactions.filter(t => t.itemId === historyModal.item?.id).length === 0 && (
+                          <tr>
+                            <td colSpan={4} className="px-6 py-12 text-center text-gray-400 font-bold">
+                              لا توجد عمليات مسجلة لهذا الصنف
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="p-8 border-t border-gray-100 bg-gray-50 flex justify-end">
+                <button 
+                  onClick={() => setHistoryModal({ isOpen: false, item: null })}
+                  className="bg-gray-900 text-white px-8 py-3 rounded-2xl font-bold hover:bg-gray-800 transition-all"
+                >
+                  إغلاق
+                </button>
+              </div>
             </motion.div>
           </div>
         )}

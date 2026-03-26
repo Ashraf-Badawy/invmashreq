@@ -30,7 +30,7 @@ export interface Transaction {
   quantity: number;
   user: string;
   date: string;
-  type: 'withdraw' | 'receive';
+  type: 'withdraw' | 'receive' | 'return';
 }
 
 export interface Order {
@@ -46,6 +46,7 @@ export type ActionType =
   | 'login'
   | 'add_item'
   | 'withdraw'
+  | 'return_item'
   | 'create_order'
   | 'receive_order'
   | 'report'

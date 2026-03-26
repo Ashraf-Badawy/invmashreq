@@ -39,7 +39,7 @@
         "quantity": { "type": "number" },
         "user": { "type": "string" },
         "date": { "type": "string" },
-        "type": { "type": "string", "enum": ["withdraw", "receive"] }
+        "type": { "type": "string", "enum": ["withdraw", "receive", "return"] }
       },
       "required": ["id", "itemId", "itemName", "quantity", "user", "date", "type"]
     },

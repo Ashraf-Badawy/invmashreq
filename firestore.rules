@@ -31,7 +31,7 @@ service cloud.firestore {
     //   - quantity: number (required)
     //   - user: string (required)
     //   - date: string (required)
-    //   - type: string (required, enum: withdraw, receive)
+    //   - type: string (required, enum: withdraw, receive, return)
     //
     // Collection: orders
     // Fields:
@@ -79,7 +79,7 @@ service cloud.firestore {
              data.itemName is string &&
              data.quantity is number &&
              data.user is string &&
-             data.type in ['withdraw', 'receive'];
+             data.type in ['withdraw', 'receive', 'return'];
     }
 
     function isValidOrder(data) {
