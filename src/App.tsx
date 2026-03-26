@@ -1311,6 +1311,7 @@ export default function App() {
                         <th className="px-6 py-4 font-bold">النوع</th>
                         <th className="px-6 py-4 font-bold">المستخدم</th>
                         <th className="px-6 py-4 font-bold">التاريخ</th>
+                        <th className="px-6 py-4 font-bold text-left">إجراء</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
@@ -1321,14 +1322,32 @@ export default function App() {
                           <td className="px-6 py-4">
                             <span className={cn(
                               "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase",
-                              t.type === 'receive' ? "bg-emerald-100 text-emerald-700" : "bg-orange-100 text-orange-700"
+                              t.type === 'receive' ? "bg-emerald-100 text-emerald-700" : 
+                              t.type === 'withdraw' ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"
                             )}>
-                              {t.type === 'receive' ? <ArrowDownRight className="w-3 h-3" /> : <ArrowUpRight className="w-3 h-3" />}
-                              {t.type === 'receive' ? 'استلام' : 'سحب'}
+                              {t.type === 'receive' ? <ArrowDownRight className="w-3 h-3" /> : 
+                               t.type === 'withdraw' ? <ArrowUpRight className="w-3 h-3" /> : <History className="w-3 h-3" />}
+                              {t.type === 'receive' ? 'استلام' : 
+                               t.type === 'withdraw' ? 'سحب' : 'مرتجع'}
                             </span>
                           </td>
                           <td className="px-6 py-4 text-gray-600">{t.user}</td>
                           <td className="px-6 py-4 text-gray-500 text-sm">{t.date}</td>
+                          <td className="px-6 py-4 text-left">
+                            {t.type === 'withdraw' && currentUser.role !== 'observer' && (
+                              <button
+                                onClick={() => {
+                                  const item = items.find(i => i.id === t.itemId);
+                                  if (item) handleOpenAdjustModal(item, 'return');
+                                }}
+                                className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-1 text-[10px] font-bold"
+                                title="عمل مرتجع"
+                              >
+                                <History className="w-3 h-3" />
+                                مرتجع
+                              </button>
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1547,12 +1566,9 @@ export default function App() {
                         return {
                           'اسم الصنف': item.name,
                           'العدد الأصلي (إجمالي الاستلام)': totalReceived,
+                          'إجمالي السحب (الصافي)': totalWithdrawnPeriod - totalReturnedPeriod,
                           'الكمية الحالية': item.quantity,
-                          'الاستهلاك الصافي (الإجمالي)': totalReceived - item.quantity,
-                          'سحب (الفترة)': totalWithdrawnPeriod,
-                          'استلام (الفترة)': receipts.reduce((sum, t) => sum + t.quantity, 0),
-                          'مرتجع (الفترة)': totalReturnedPeriod,
-                          'الاستهلاك الصافي (الفترة)': totalWithdrawnPeriod - totalReturnedPeriod,
+                          'الاستهلاك الصافي (الفرق)': totalReceived - item.quantity,
                           'الوحدة': item.unit
                         };
                       });
@@ -1647,12 +1663,10 @@ export default function App() {
                     <table className="w-full text-right">
                       <thead>
                         <tr className="border-b border-gray-100">
-                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">اسم الصنف</th>
-                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">العدد الأصلي</th>
-                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">إجمالي السحب</th>
-                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">إجمالي المرتجع</th>
-                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">الاستهلاك الصافي</th>
-                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">الكمية الحالية</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">اسم الصنف</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">العدد الأصلي (إجمالي الاستلام)</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">إجمالي السحب (الصافي)</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">الكمية الحالية</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1674,13 +1688,20 @@ export default function App() {
                             .filter(t => t.itemId === item.id && t.type === 'receive')
                             .reduce((sum, t) => sum + t.quantity, 0);
 
+                          const netWithdrawal = totalWithdrawn - totalReturned;
+
                           return (
                             <tr key={item.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
                               <td className="px-6 py-4 font-bold text-gray-900">{item.name}</td>
                               <td className="px-6 py-4 font-black text-gray-700">{totalReceived}</td>
-                              <td className="px-6 py-4 font-black text-red-600">{totalWithdrawn}</td>
-                              <td className="px-6 py-4 font-black text-blue-600">{totalReturned}</td>
-                              <td className="px-6 py-4 font-black text-orange-600">{totalWithdrawn - totalReturned}</td>
+                              <td className="px-6 py-4 font-black text-red-600">
+                                {netWithdrawal}
+                                {totalReturned > 0 && (
+                                  <span className="text-[10px] text-blue-500 mr-2 font-bold">
+                                    (بعد خصم {totalReturned} مرتجع)
+                                  </span>
+                                )}
+                              </td>
                               <td className="px-6 py-4">
                                 <span className="font-black text-emerald-600">{item.quantity}</span>
                                 <span className="text-xs text-gray-500 mr-1">{item.unit}</span>
@@ -2276,7 +2297,7 @@ export default function App() {
               <div className="p-8 overflow-y-auto flex-1 space-y-8">
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100">
-                    <p className="text-sm text-emerald-600 font-bold mb-1">إجمالي الاستلام</p>
+                    <p className="text-sm text-emerald-600 font-bold mb-1">العدد الأصلي (إجمالي الاستلام)</p>
                     <h4 className="text-2xl font-black text-emerald-700">
                       {transactions
                         .filter(t => t.itemId === historyModal.item?.id && t.type === 'receive')
@@ -2284,30 +2305,34 @@ export default function App() {
                     </h4>
                   </div>
                   <div className="bg-red-50 p-6 rounded-3xl border border-red-100">
-                    <p className="text-sm text-red-600 font-bold mb-1">إجمالي السحب</p>
+                    <p className="text-sm text-red-600 font-bold mb-1">إجمالي السحب (الصافي)</p>
                     <h4 className="text-2xl font-black text-red-700">
-                      {transactions
-                        .filter(t => t.itemId === historyModal.item?.id && t.type === 'withdraw')
-                        .reduce((sum, t) => sum + t.quantity, 0)}
-                    </h4>
-                  </div>
-                  <div className="bg-blue-50 p-6 rounded-3xl border border-blue-100">
-                    <p className="text-sm text-blue-600 font-bold mb-1">إجمالي المرتجع</p>
-                    <h4 className="text-2xl font-black text-blue-700">
-                      {transactions
-                        .filter(t => t.itemId === historyModal.item?.id && t.type === 'return')
-                        .reduce((sum, t) => sum + t.quantity, 0)}
+                      {(() => {
+                        const w = transactions
+                          .filter(t => t.itemId === historyModal.item?.id && t.type === 'withdraw')
+                          .reduce((sum, t) => sum + t.quantity, 0);
+                        const r = transactions
+                          .filter(t => t.itemId === historyModal.item?.id && t.type === 'return')
+                          .reduce((sum, t) => sum + t.quantity, 0);
+                        return w - r;
+                      })()}
                     </h4>
                   </div>
                   <div className="bg-orange-50 p-6 rounded-3xl border border-orange-100">
-                    <p className="text-sm text-orange-600 font-bold mb-1">الاستهلاك الصافي</p>
+                    <p className="text-sm text-orange-600 font-bold mb-1">الكمية الحالية</p>
                     <h4 className="text-2xl font-black text-orange-700">
-                      {transactions
-                        .filter(t => t.itemId === historyModal.item?.id && t.type === 'withdraw')
-                        .reduce((sum, t) => sum + t.quantity, 0) - 
-                       transactions
-                        .filter(t => t.itemId === historyModal.item?.id && t.type === 'return')
-                        .reduce((sum, t) => sum + t.quantity, 0)}
+                      {historyModal.item.quantity}
+                    </h4>
+                  </div>
+                  <div className="bg-gray-900 p-6 rounded-3xl border border-gray-800 text-white">
+                    <p className="text-sm text-gray-400 font-bold mb-1">الاستهلاك الصافي (الفرق)</p>
+                    <h4 className="text-2xl font-black">
+                      {(() => {
+                        const totalReceived = transactions
+                          .filter(t => t.itemId === historyModal.item?.id && t.type === 'receive')
+                          .reduce((sum, t) => sum + t.quantity, 0);
+                        return totalReceived - historyModal.item.quantity;
+                      })()}
                     </h4>
                   </div>
                 </div>
@@ -2329,6 +2354,7 @@ export default function App() {
                           <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">النوع</th>
                           <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">الكمية</th>
                           <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">المستخدم</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-left">إجراء</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2355,6 +2381,18 @@ export default function App() {
                                 {t.type === 'withdraw' ? '-' : '+'}{t.quantity}
                               </td>
                               <td className="px-6 py-4 text-gray-900 font-bold">{t.user}</td>
+                              <td className="px-6 py-4 text-left">
+                                {t.type === 'withdraw' && currentUser.role !== 'observer' && (
+                                  <button
+                                    onClick={() => handleOpenAdjustModal(historyModal.item!, 'return')}
+                                    className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-1 text-[10px] font-bold"
+                                    title="عمل مرتجع"
+                                  >
+                                    <History className="w-3 h-3" />
+                                    مرتجع
+                                  </button>
+                                )}
+                              </td>
                             </tr>
                           ))}
                         {transactions.filter(t => t.itemId === historyModal.item?.id).length === 0 && (
