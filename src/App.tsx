@@ -34,12 +34,14 @@ import {
   LayoutGrid,
   List as ListIcon,
   UserPlus,
-  Settings
+  Settings,
+  FileDown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { format } from 'date-fns';
+import { format, startOfMonth, endOfMonth, subMonths } from 'date-fns';
+import * as XLSX from 'xlsx';
 import { 
   BarChart, 
   Bar, 
@@ -114,6 +116,7 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error' | 'info', message: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [stockFilter, setStockFilter] = useState<'all' | 'available' | 'low' | 'critical'>('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [reportsPage, setReportsPage] = useState(1);
   const [transactionsPage, setTransactionsPage] = useState(1);
@@ -137,6 +140,9 @@ export default function App() {
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [newUserData, setNewUserData] = useState({ username: '', password: '', name: '', email: '', role: 'user' as UserRole });
   const [editUserData, setEditUserData] = useState({ username: '', password: '', name: '', email: '', role: 'user' as UserRole });
+
+  const [reportStartDate, setReportStartDate] = useState<string>(format(startOfMonth(new Date()), 'yyyy-MM-dd'));
+  const [reportEndDate, setReportEndDate] = useState<string>(format(new Date(), 'yyyy-MM-dd'));
 
   // Persistence & Firebase Sync
   useEffect(() => {
@@ -324,7 +330,8 @@ export default function App() {
           if (item) {
             if (item.quantity >= action.quantity) {
               try {
-                await updateDoc(doc(db, userPath, 'items', item.id), { quantity: item.quantity - action.quantity! });
+                const newQuantity = item.quantity - action.quantity!;
+                await updateDoc(doc(db, userPath, 'items', item.id), { quantity: newQuantity });
                 const newTransaction: Omit<Transaction, 'id'> = {
                   itemId: item.id,
                   itemName: item.name,
@@ -334,7 +341,19 @@ export default function App() {
                   type: 'withdraw'
                 };
                 await addDoc(collection(db, userPath, 'transactions'), newTransaction);
-                setFeedback({ type: 'success', message: `تم سحب ${action.quantity} ${item.unit} من ${item.name}` });
+                
+                let feedbackMessage = `تم سحب ${action.quantity} ${item.unit} من ${item.name}`;
+                let feedbackType: 'success' | 'error' | 'info' = 'success';
+                
+                if (newQuantity <= item.criticalThreshold) {
+                  feedbackMessage += ` - تنبيه: المخزون حرج جداً (${newQuantity})`;
+                  feedbackType = 'error';
+                } else if (newQuantity <= item.lowThreshold) {
+                  feedbackMessage += ` - تنبيه: المخزون منخفض (${newQuantity})`;
+                  feedbackType = 'info';
+                }
+                
+                setFeedback({ type: feedbackType, message: feedbackMessage });
                 setActiveTab('transactions');
               } catch (error) {
                 handleFirestoreError(error, OperationType.WRITE, `${userPath}/items/transactions`);
@@ -471,6 +490,13 @@ export default function App() {
     setActiveTab('inventory');
   };
 
+  const exportToExcel = (data: any[], fileName: string) => {
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Report");
+    XLSX.writeFile(wb, `${fileName}.xlsx`);
+  };
+
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUserData.username || !newUserData.password || !newUserData.name) return;
@@ -573,7 +599,8 @@ export default function App() {
     }
 
     try {
-      await updateDoc(doc(db, userPath, 'items', item.id), { quantity: item.quantity + amount });
+      const newQuantity = item.quantity + amount;
+      await updateDoc(doc(db, userPath, 'items', item.id), { quantity: newQuantity });
       
       const newTransaction: Omit<Transaction, 'id'> = {
         itemId: item.id,
@@ -584,7 +611,21 @@ export default function App() {
         type: adjustModal.type
       };
       await addDoc(collection(db, userPath, 'transactions'), newTransaction);
-      setFeedback({ type: 'success', message: `تم ${amount > 0 ? 'إضافة' : 'سحب'} ${Math.abs(amount)} ${item.unit}` });
+      
+      let feedbackMessage = `تم ${amount > 0 ? 'إضافة' : 'سحب'} ${Math.abs(amount)} ${item.unit}`;
+      let feedbackType: 'success' | 'error' | 'info' = 'success';
+      
+      if (amount < 0) {
+        if (newQuantity <= item.criticalThreshold) {
+          feedbackMessage += ` - تنبيه: المخزون حرج جداً (${newQuantity})`;
+          feedbackType = 'error';
+        } else if (newQuantity <= item.lowThreshold) {
+          feedbackMessage += ` - تنبيه: المخزون منخفض (${newQuantity})`;
+          feedbackType = 'info';
+        }
+      }
+      
+      setFeedback({ type: feedbackType, message: feedbackMessage });
       setAdjustModal({ isOpen: false, item: null, type: 'receive' });
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `${userPath}/items/transactions`);
@@ -707,7 +748,16 @@ export default function App() {
     }
   };
 
-  const filteredItems = items.filter(i => i.name.toLowerCase().includes(searchQuery.toLowerCase()));
+  const filteredItems = items.filter(i => {
+    const matchesSearch = i.name.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesFilter = 
+      stockFilter === 'all' ? true :
+      stockFilter === 'available' ? i.quantity > i.lowThreshold :
+      stockFilter === 'low' ? (i.quantity <= i.lowThreshold && i.quantity > i.criticalThreshold) :
+      stockFilter === 'critical' ? i.quantity <= i.criticalThreshold : true;
+    
+    return matchesSearch && matchesFilter;
+  });
   const totalPages = Math.ceil(filteredItems.length / ITEMS_PER_PAGE);
   const paginatedItems = filteredItems.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
 
@@ -948,6 +998,18 @@ export default function App() {
                       >
                         <ListIcon className="w-4 h-4" />
                       </button>
+                    </div>
+                    <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl p-1">
+                      <select 
+                        value={stockFilter}
+                        onChange={(e) => setStockFilter(e.target.value as any)}
+                        className="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer pr-8"
+                      >
+                        <option value="all">الكل</option>
+                        <option value="available">متوفر</option>
+                        <option value="low">منخفض</option>
+                        <option value="critical">حرج</option>
+                      </select>
                     </div>
                     <div className="relative flex-1 sm:w-64">
                       <input 
@@ -1327,15 +1389,90 @@ export default function App() {
                 exit={{ opacity: 0, x: -20 }}
                 className="space-y-8"
               >
+                {/* Report Controls */}
+                <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm flex flex-col md:flex-row items-center justify-between gap-6">
+                  <div className="flex flex-wrap items-center gap-4">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-gray-400 font-bold mr-2">من تاريخ</label>
+                      <input 
+                        type="date" 
+                        value={reportStartDate}
+                        onChange={(e) => setReportStartDate(e.target.value)}
+                        className="px-4 py-2 bg-gray-50 border border-gray-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-gray-400 font-bold mr-2">إلى تاريخ</label>
+                      <input 
+                        type="date" 
+                        value={reportEndDate}
+                        onChange={(e) => setReportEndDate(e.target.value)}
+                        className="px-4 py-2 bg-gray-50 border border-gray-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      />
+                    </div>
+                    <div className="flex items-end gap-2 h-full pt-5">
+                      <button 
+                        onClick={() => {
+                          setReportStartDate(format(startOfMonth(new Date()), 'yyyy-MM-dd'));
+                          setReportEndDate(format(endOfMonth(new Date()), 'yyyy-MM-dd'));
+                        }}
+                        className="px-3 py-2 text-xs font-bold text-emerald-600 bg-emerald-50 rounded-lg hover:bg-emerald-100 transition-colors"
+                      >
+                        الشهر الحالي
+                      </button>
+                      <button 
+                        onClick={() => {
+                          const lastMonth = subMonths(new Date(), 1);
+                          setReportStartDate(format(startOfMonth(lastMonth), 'yyyy-MM-dd'));
+                          setReportEndDate(format(endOfMonth(lastMonth), 'yyyy-MM-dd'));
+                        }}
+                        className="px-3 py-2 text-xs font-bold text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
+                      >
+                        الشهر الماضي
+                      </button>
+                    </div>
+                  </div>
+                  
+                  <button 
+                    onClick={() => {
+                      const filteredTransactions = transactions.filter(t => {
+                        const date = t.date.split('T')[0];
+                        return date >= reportStartDate && date <= reportEndDate;
+                      });
+                      
+                      const reportData = items.map(item => {
+                        const withdrawals = filteredTransactions.filter(t => t.itemId === item.id && t.type === 'withdraw');
+                        const receipts = filteredTransactions.filter(t => t.itemId === item.id && t.type === 'receive');
+                        return {
+                          'اسم الصنف': item.name,
+                          'الكمية الحالية': item.quantity,
+                          'الوحدة': item.unit,
+                          'إجمالي السحب': withdrawals.reduce((sum, t) => sum + t.quantity, 0),
+                          'إجمالي الإضافة': receipts.reduce((sum, t) => sum + t.quantity, 0),
+                          'عدد العمليات': withdrawals.length + receipts.length
+                        };
+                      });
+                      exportToExcel(reportData, `تقرير_المخزون_${reportStartDate}_إلى_${reportEndDate}`);
+                    }}
+                    className="flex items-center gap-2 px-6 py-3 bg-gray-900 text-white rounded-2xl font-bold hover:bg-gray-800 transition-all shadow-lg shadow-gray-200"
+                  >
+                    <FileDown className="w-5 h-5" />
+                    تصدير Excel
+                  </button>
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm">
                     <p className="text-sm text-gray-500 mb-1">إجمالي الأصناف</p>
                     <h4 className="text-3xl font-black text-gray-900">{items.length}</h4>
                   </div>
                   <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm">
-                    <p className="text-sm text-gray-500 mb-1">عمليات السحب</p>
+                    <p className="text-sm text-gray-500 mb-1">عمليات السحب (الفترة المختارة)</p>
                     <h4 className="text-3xl font-black text-gray-900">
-                      {transactions.filter(t => t.type === 'withdraw').length}
+                      {transactions.filter(t => {
+                        const date = t.date.split('T')[0];
+                        return t.type === 'withdraw' && date >= reportStartDate && date <= reportEndDate;
+                      }).length}
                     </h4>
                   </div>
                   <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm">
@@ -1348,7 +1485,7 @@ export default function App() {
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                   <div className="bg-white p-8 rounded-3xl border border-gray-200 shadow-sm">
-                    <h4 className="text-lg font-bold text-gray-900 mb-6">حركة المخزون الأسبوعية</h4>
+                    <h4 className="text-lg font-bold text-gray-900 mb-6">حركة المخزون (الفترة المختارة)</h4>
                     <div className="h-64">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={
@@ -1356,8 +1493,9 @@ export default function App() {
                             name: day,
                             value: transactions.filter(t => {
                               const d = new Date(t.date);
+                              const date = t.date.split('T')[0];
                               const days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-                              return days[d.getDay()] === day;
+                              return days[d.getDay()] === day && date >= reportStartDate && date <= reportEndDate;
                             }).length
                           }))
                         }>
@@ -1400,7 +1538,7 @@ export default function App() {
                 </div>
 
                 <div className="bg-white p-8 rounded-3xl border border-gray-200 shadow-sm">
-                  <h4 className="text-lg font-bold text-gray-900 mb-6">تقرير سحب الكميات لكل صنف</h4>
+                  <h4 className="text-lg font-bold text-gray-900 mb-6">تقرير سحب الكميات لكل صنف (الفترة المختارة)</h4>
                   <div className="overflow-x-auto">
                     <table className="w-full text-right">
                       <thead>
@@ -1413,11 +1551,16 @@ export default function App() {
                       </thead>
                       <tbody>
                         {items.slice((reportsPage - 1) * ITEMS_PER_PAGE, reportsPage * ITEMS_PER_PAGE).map(item => {
-                          const totalWithdrawn = transactions
+                          const filteredTransactions = transactions.filter(t => {
+                            const date = t.date.split('T')[0];
+                            return date >= reportStartDate && date <= reportEndDate;
+                          });
+
+                          const totalWithdrawn = filteredTransactions
                             .filter(t => t.itemId === item.id && t.type === 'withdraw')
                             .reduce((sum, t) => sum + t.quantity, 0);
                           
-                          const allWithdrawals = transactions
+                          const allWithdrawals = filteredTransactions
                             .filter(t => t.type === 'withdraw')
                             .reduce((sum, t) => sum + t.quantity, 0);
                           
