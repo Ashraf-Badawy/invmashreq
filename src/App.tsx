@@ -316,7 +316,20 @@ export default function App() {
             criticalThreshold: 5
           };
           try {
-            await addDoc(collection(db, userPath, 'items'), newItem);
+            const docRef = await addDoc(collection(db, userPath, 'items'), newItem);
+            
+            // Create initial transaction
+            if (newItem.quantity > 0) {
+              await addDoc(collection(db, userPath, 'transactions'), {
+                itemId: docRef.id,
+                itemName: newItem.name,
+                quantity: newItem.quantity,
+                user: currentUser.name,
+                date: new Date().toISOString(),
+                type: 'receive'
+              });
+            }
+
             setFeedback({ type: 'success', message: `تم إضافة الصنف: ${action.name}` });
             setActiveTab('inventory');
           } catch (error) {
@@ -680,7 +693,20 @@ export default function App() {
     };
 
     try {
-      await addDoc(collection(db, userPath, 'items'), newItem);
+      const docRef = await addDoc(collection(db, userPath, 'items'), newItem);
+      
+      // Create initial transaction
+      if (newItem.quantity > 0) {
+        await addDoc(collection(db, userPath, 'transactions'), {
+          itemId: docRef.id,
+          itemName: newItem.name,
+          quantity: newItem.quantity,
+          user: currentUser.name,
+          date: new Date().toISOString(),
+          type: 'receive'
+        });
+      }
+
       setIsAddItemModalOpen(false);
       setNewItemData({ name: '', quantity: 0, unit: 'قطعة', lowThreshold: 10, criticalThreshold: 5 });
       setFeedback({ type: 'success', message: `تم إضافة ${newItemData.name} بنجاح` });
@@ -1501,15 +1527,33 @@ export default function App() {
                       });
                       
                       const reportData = items.map(item => {
-                        const withdrawals = filteredTransactions.filter(t => t.itemId === item.id && t.type === 'withdraw');
-                        const receipts = filteredTransactions.filter(t => t.itemId === item.id && t.type === 'receive');
+                        const periodTransactions = transactions.filter(t => {
+                          const date = t.date.split('T')[0];
+                          return date >= reportStartDate && date <= reportEndDate;
+                        });
+                        
+                        const withdrawals = periodTransactions.filter(t => t.itemId === item.id && t.type === 'withdraw');
+                        const receipts = periodTransactions.filter(t => t.itemId === item.id && t.type === 'receive');
+                        const returns = periodTransactions.filter(t => t.itemId === item.id && t.type === 'return');
+                        
+                        // Total history for Original Count
+                        const totalReceived = transactions
+                          .filter(t => t.itemId === item.id && t.type === 'receive')
+                          .reduce((sum, t) => sum + t.quantity, 0);
+
+                        const totalWithdrawnPeriod = withdrawals.reduce((sum, t) => sum + t.quantity, 0);
+                        const totalReturnedPeriod = returns.reduce((sum, t) => sum + t.quantity, 0);
+
                         return {
                           'اسم الصنف': item.name,
+                          'العدد الأصلي (إجمالي الاستلام)': totalReceived,
                           'الكمية الحالية': item.quantity,
-                          'الوحدة': item.unit,
-                          'إجمالي السحب': withdrawals.reduce((sum, t) => sum + t.quantity, 0),
-                          'إجمالي الإضافة': receipts.reduce((sum, t) => sum + t.quantity, 0),
-                          'عدد العمليات': withdrawals.length + receipts.length
+                          'الاستهلاك الصافي (الإجمالي)': totalReceived - item.quantity,
+                          'سحب (الفترة)': totalWithdrawnPeriod,
+                          'استلام (الفترة)': receipts.reduce((sum, t) => sum + t.quantity, 0),
+                          'مرتجع (الفترة)': totalReturnedPeriod,
+                          'الاستهلاك الصافي (الفترة)': totalWithdrawnPeriod - totalReturnedPeriod,
+                          'الوحدة': item.unit
                         };
                       });
                       exportToExcel(reportData, `تقرير_المخزون_${reportStartDate}_إلى_${reportEndDate}`);
@@ -1604,9 +1648,11 @@ export default function App() {
                       <thead>
                         <tr className="border-b border-gray-100">
                           <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">اسم الصنف</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">العدد الأصلي</th>
                           <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">إجمالي السحب</th>
-                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">الوحدة</th>
-                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">النسبة من الإجمالي</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">إجمالي المرتجع</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">الاستهلاك الصافي</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold">الكمية الحالية</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1620,27 +1666,24 @@ export default function App() {
                             .filter(t => t.itemId === item.id && t.type === 'withdraw')
                             .reduce((sum, t) => sum + t.quantity, 0);
                           
-                          const allWithdrawals = filteredTransactions
-                            .filter(t => t.type === 'withdraw')
+                          const totalReturned = filteredTransactions
+                            .filter(t => t.itemId === item.id && t.type === 'return')
                             .reduce((sum, t) => sum + t.quantity, 0);
-                          
-                          const percentage = allWithdrawals > 0 ? (totalWithdrawn / allWithdrawals) * 100 : 0;
+
+                          const totalReceived = transactions
+                            .filter(t => t.itemId === item.id && t.type === 'receive')
+                            .reduce((sum, t) => sum + t.quantity, 0);
 
                           return (
                             <tr key={item.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
                               <td className="px-6 py-4 font-bold text-gray-900">{item.name}</td>
-                              <td className="px-6 py-4 text-red-600 font-black">{totalWithdrawn}</td>
-                              <td className="px-6 py-4 text-gray-500">{item.unit}</td>
+                              <td className="px-6 py-4 font-black text-gray-700">{totalReceived}</td>
+                              <td className="px-6 py-4 font-black text-red-600">{totalWithdrawn}</td>
+                              <td className="px-6 py-4 font-black text-blue-600">{totalReturned}</td>
+                              <td className="px-6 py-4 font-black text-orange-600">{totalWithdrawn - totalReturned}</td>
                               <td className="px-6 py-4">
-                                <div className="flex items-center gap-3">
-                                  <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-                                    <div 
-                                      className="h-full bg-red-500 rounded-full" 
-                                      style={{ width: `${percentage}%` }}
-                                    />
-                                  </div>
-                                  <span className="text-xs font-bold text-gray-400">{percentage.toFixed(1)}%</span>
-                                </div>
+                                <span className="font-black text-emerald-600">{item.quantity}</span>
+                                <span className="text-xs text-gray-500 mr-1">{item.unit}</span>
                               </td>
                             </tr>
                           );
@@ -2231,27 +2274,38 @@ export default function App() {
               </div>
 
               <div className="p-8 overflow-y-auto flex-1 space-y-8">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div className="bg-red-50 p-6 rounded-3xl border border-red-100">
-                    <p className="text-sm text-red-600 font-bold mb-1">إجمالي السحب</p>
-                    <h4 className="text-3xl font-black text-red-700">
-                      {transactions
-                        .filter(t => t.itemId === historyModal.item?.id && t.type === 'withdraw')
-                        .reduce((sum, t) => sum + t.quantity, 0)}
-                    </h4>
-                  </div>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100">
                     <p className="text-sm text-emerald-600 font-bold mb-1">إجمالي الاستلام</p>
-                    <h4 className="text-3xl font-black text-emerald-700">
+                    <h4 className="text-2xl font-black text-emerald-700">
                       {transactions
                         .filter(t => t.itemId === historyModal.item?.id && t.type === 'receive')
                         .reduce((sum, t) => sum + t.quantity, 0)}
                     </h4>
                   </div>
+                  <div className="bg-red-50 p-6 rounded-3xl border border-red-100">
+                    <p className="text-sm text-red-600 font-bold mb-1">إجمالي السحب</p>
+                    <h4 className="text-2xl font-black text-red-700">
+                      {transactions
+                        .filter(t => t.itemId === historyModal.item?.id && t.type === 'withdraw')
+                        .reduce((sum, t) => sum + t.quantity, 0)}
+                    </h4>
+                  </div>
                   <div className="bg-blue-50 p-6 rounded-3xl border border-blue-100">
                     <p className="text-sm text-blue-600 font-bold mb-1">إجمالي المرتجع</p>
-                    <h4 className="text-3xl font-black text-blue-700">
+                    <h4 className="text-2xl font-black text-blue-700">
                       {transactions
+                        .filter(t => t.itemId === historyModal.item?.id && t.type === 'return')
+                        .reduce((sum, t) => sum + t.quantity, 0)}
+                    </h4>
+                  </div>
+                  <div className="bg-orange-50 p-6 rounded-3xl border border-orange-100">
+                    <p className="text-sm text-orange-600 font-bold mb-1">الاستهلاك الصافي</p>
+                    <h4 className="text-2xl font-black text-orange-700">
+                      {transactions
+                        .filter(t => t.itemId === historyModal.item?.id && t.type === 'withdraw')
+                        .reduce((sum, t) => sum + t.quantity, 0) - 
+                       transactions
                         .filter(t => t.itemId === historyModal.item?.id && t.type === 'return')
                         .reduce((sum, t) => sum + t.quantity, 0)}
                     </h4>
