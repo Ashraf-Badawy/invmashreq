@@ -35,7 +35,8 @@ import {
   List as ListIcon,
   UserPlus,
   Settings,
-  FileDown
+  FileDown,
+  Upload
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
@@ -136,6 +137,17 @@ export default function App() {
   const [thresholdValues, setThresholdValues] = useState({ low: 10, critical: 5 });
   const [newOrderData, setNewOrderData] = useState({ item: '', quantity: 1 });
 
+  // Excel Import States
+  const [isImportExcelModalOpen, setIsImportExcelModalOpen] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importPreviewItems, setImportPreviewItems] = useState<{
+    name: string;
+    quantity: number;
+    unit: string;
+    oldQuantity: number | null;
+    isNew: boolean;
+  }[]>([]);
+
   const [isAddUserModalOpen, setIsAddUserModalOpen] = useState(false);
   const [isEditUserModalOpen, setIsEditUserModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -176,12 +188,28 @@ export default function App() {
         try {
           const userDoc = await getDoc(doc(db, 'users', savedUserId));
           if (userDoc.exists()) {
-            setCurrentUser({ ...userDoc.data(), id: userDoc.id } as User);
+            const userData = { ...userDoc.data(), id: userDoc.id } as User;
+            setCurrentUser(userData);
+            localStorage.setItem('inventory_cached_user', JSON.stringify(userData));
           } else {
             sessionStorage.removeItem('inventory_user_id');
+            localStorage.removeItem('inventory_cached_user');
           }
         } catch (error) {
           console.error("Error fetching user:", error);
+          // Try offline fallback
+          const cachedUserStr = localStorage.getItem('inventory_cached_user');
+          if (cachedUserStr) {
+            try {
+              const cachedUser = JSON.parse(cachedUserStr) as User;
+              if (cachedUser.id === savedUserId) {
+                setCurrentUser(cachedUser);
+                setFeedback({ type: 'info', message: 'تم تشغيل النظام في الوضع غير المتصل (Offline Mode)' });
+              }
+            } catch (e) {
+              console.error("Failed to parse cached user:", e);
+            }
+          }
         } finally {
           setIsAuthReady(true);
         }
@@ -512,13 +540,32 @@ export default function App() {
         const userWithId = { ...userData, id: userDoc.id };
         setCurrentUser(userWithId);
         sessionStorage.setItem('inventory_user_id', userDoc.id);
+        localStorage.setItem('inventory_cached_user', JSON.stringify(userWithId));
         setFeedback({ type: 'success', message: 'تم تسجيل الدخول بنجاح' });
       } else {
         setLoginError('كلمة المرور غير صحيحة');
       }
     } catch (error) {
+      console.error("Login error:", error);
+      // Offline fallback login check
+      const cachedUserStr = localStorage.getItem('inventory_cached_user');
+      if (cachedUserStr) {
+        try {
+          const cachedUser = JSON.parse(cachedUserStr) as User;
+          if (cachedUser.username.trim().toLowerCase() === loginData.username.trim().toLowerCase() && cachedUser.password === loginData.password) {
+            setCurrentUser(cachedUser);
+            sessionStorage.setItem('inventory_user_id', cachedUser.id);
+            setFeedback({ type: 'info', message: 'تم تسجيل الدخول في الوضع غير المتصل (Offline Mode)' });
+            setIsLoggingIn(false);
+            return;
+          }
+        } catch (e) {
+          console.error("Error checking offline cached login:", e);
+        }
+      }
+
       handleFirestoreError(error, OperationType.GET, 'users');
-      setLoginError('حدث خطأ أثناء تسجيل الدخول');
+      setLoginError('تعذر الاتصال بالخادم. تأكد من اتصال الإنترنت وحاول مجدداً.');
     } finally {
       setIsLoggingIn(false);
     }
@@ -527,6 +574,7 @@ export default function App() {
   const handleLogout = () => {
     setCurrentUser(null);
     sessionStorage.removeItem('inventory_user_id');
+    localStorage.removeItem('inventory_cached_user');
     setFeedback({ type: 'info', message: 'تم تسجيل الخروج بنجاح' });
     setActiveTab('inventory');
   };
@@ -677,6 +725,139 @@ export default function App() {
     const item = items.find(i => i.id === itemId);
     if (!item) return;
     handleOpenAdjustModal(item, amount > 0 ? 'receive' : 'withdraw');
+  };
+
+  const handleImportExcel = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const bstr = event.target?.result;
+        const wb = XLSX.read(bstr, { type: 'binary' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const rawData = XLSX.utils.sheet_to_json(ws);
+
+        if (!rawData || rawData.length === 0) {
+          setFeedback({ type: 'error', message: 'الملف فارغ أو غير صالح.' });
+          return;
+        }
+
+        const parsedItems: {
+          name: string;
+          quantity: number;
+          unit: string;
+          oldQuantity: number | null;
+          isNew: boolean;
+        }[] = [];
+
+        rawData.forEach((row: any) => {
+          const nameKey = Object.keys(row).find(k => 
+            ['نوع الصنف', 'اسم الصنف', 'الصنف', 'الاسم', 'name', 'item', 'Item', 'Name'].includes(k.trim())
+          );
+          const qtyKey = Object.keys(row).find(k => 
+            ['العدد النهائي', 'الكمية', 'العدد', 'الكميه', 'quantity', 'qty', 'Quantity', 'Qty'].includes(k.trim())
+          );
+
+          if (nameKey) {
+            const name = String(row[nameKey]).trim();
+            const quantity = qtyKey ? parseInt(row[qtyKey]) || 0 : 0;
+            const unit = row['الوحدة'] || row['unit'] || 'قطعة';
+
+            if (name) {
+              const existingItem = items.find(i => i.name.toLowerCase() === name.toLowerCase());
+              parsedItems.push({
+                name,
+                quantity: Math.max(0, quantity),
+                unit,
+                oldQuantity: existingItem ? existingItem.quantity : null,
+                isNew: !existingItem
+              });
+            }
+          }
+        });
+
+        if (parsedItems.length === 0) {
+          setFeedback({ type: 'error', message: 'لم يتم العثور على أعمدة صالحة للاسم والكمية في الملف. تأكد من وجود عمود باسم "نوع الصنف" أو "اسم الصنف" و "العدد النهائي" أو "الكمية".' });
+          return;
+        }
+
+        setImportPreviewItems(parsedItems);
+        setIsImportExcelModalOpen(true);
+      } catch (err) {
+        console.error("Excel import error:", err);
+        setFeedback({ type: 'error', message: 'حدث خطأ أثناء قراءة ملف Excel.' });
+      }
+    };
+    reader.readAsBinaryString(file);
+    e.target.value = '';
+  };
+
+  const handleConfirmImport = async () => {
+    if (!currentUser || importPreviewItems.length === 0) return;
+    setIsImporting(true);
+    const userPath = `users/${currentUser.id}`;
+    let addedCount = 0;
+    let updatedCount = 0;
+
+    try {
+      for (const pItem of importPreviewItems) {
+        const existingItem = items.find(i => i.name.toLowerCase() === pItem.name.toLowerCase());
+        
+        if (existingItem) {
+          if (existingItem.quantity !== pItem.quantity) {
+            await updateDoc(doc(db, userPath, 'items', existingItem.id), {
+              quantity: pItem.quantity
+            });
+
+            const diff = pItem.quantity - existingItem.quantity;
+            await addDoc(collection(db, userPath, 'transactions'), {
+              itemId: existingItem.id,
+              itemName: existingItem.name,
+              quantity: Math.abs(diff),
+              user: currentUser.name || 'مستورد',
+              date: new Date().toISOString(),
+              type: diff > 0 ? 'receive' : 'withdraw'
+            });
+            updatedCount++;
+          }
+        } else {
+          const newItemRef = await addDoc(collection(db, userPath, 'items'), {
+            name: pItem.name,
+            quantity: pItem.quantity,
+            unit: pItem.unit || 'قطعة',
+            lowThreshold: 10,
+            criticalThreshold: 5
+          });
+
+          if (pItem.quantity > 0) {
+            await addDoc(collection(db, userPath, 'transactions'), {
+              itemId: newItemRef.id,
+              itemName: pItem.name,
+              quantity: pItem.quantity,
+              user: currentUser.name || 'مستورد',
+              date: new Date().toISOString(),
+              type: 'receive'
+            });
+          }
+          addedCount++;
+        }
+      }
+
+      setFeedback({ 
+        type: 'success', 
+        message: `تم الاستيراد بنجاح! تم إضافة ${addedCount} صنف جديد وتحديث ${updatedCount} صنف موجود دون المساس بباقي البيانات.` 
+      });
+      setIsImportExcelModalOpen(false);
+      setImportPreviewItems([]);
+    } catch (error) {
+      console.error("Error during import:", error);
+      setFeedback({ type: 'error', message: 'حدث خطأ أثناء حفظ التعديلات في قاعدة البيانات.' });
+    } finally {
+      setIsImporting(false);
+    }
   };
 
   const handleManualAddItem = async (e: React.FormEvent) => {
@@ -1076,12 +1257,27 @@ export default function App() {
                       <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                     </div>
                     {currentUser.role === 'admin' && (
-                      <button 
-                        onClick={() => setIsAddItemModalOpen(true)}
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white p-2 rounded-xl transition-all shadow-lg shadow-emerald-100 shrink-0"
-                      >
-                        <Plus className="w-5 h-5" />
-                      </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <label 
+                          className="bg-sky-600 hover:bg-sky-700 text-white p-2.5 rounded-xl transition-all shadow-lg shadow-sky-100 shrink-0 cursor-pointer flex items-center justify-center"
+                          title="استيراد من Excel"
+                        >
+                          <Upload className="w-5 h-5" />
+                          <input 
+                            type="file" 
+                            accept=".xlsx,.xls" 
+                            onChange={handleImportExcel} 
+                            className="hidden" 
+                          />
+                        </label>
+                        <button 
+                          onClick={() => setIsAddItemModalOpen(true)}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white p-2.5 rounded-xl transition-all shadow-lg shadow-emerald-100 shrink-0 flex items-center justify-center"
+                          title="إضافة صنف جديد"
+                        >
+                          <Plus className="w-5 h-5" />
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1554,7 +1750,6 @@ export default function App() {
 
                         return {
                           'نوع الصنف': item.name,
-                          'العدد الأصلي': originalQty,
                           'الطلبيه': lastOrderQty,
                           'المتبقي من الطلبيه': remainingFromOrder,
                           'العدد النهائي': item.quantity
@@ -1652,7 +1847,6 @@ export default function App() {
                       <thead>
                         <tr className="border-b border-gray-100">
                           <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">نوع الصنف</th>
-                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">العدد الأصلي</th>
                           <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">الطلبية</th>
                           <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">المتبقي من الطلبية</th>
                           <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">العدد النهائي</th>
@@ -1674,7 +1868,6 @@ export default function App() {
                           return (
                             <tr key={item.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
                               <td className="px-6 py-4 font-bold text-gray-900">{item.name}</td>
-                              <td className="px-6 py-4 font-black text-gray-700">{originalQty}</td>
                               <td className="px-6 py-4 font-black text-blue-600">{lastOrderQty}</td>
                               <td className="px-6 py-4 font-black text-purple-600">{remainingFromOrder}</td>
                               <td className="px-6 py-4">
@@ -2141,6 +2334,114 @@ export default function App() {
                   حفظ الصنف
                 </button>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Import Excel Preview Modal */}
+      <AnimatePresence>
+        {isImportExcelModalOpen && importPreviewItems.length > 0 && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => { if (!isImporting) { setIsImportExcelModalOpen(false); setImportPreviewItems([]); } }}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-2xl bg-white rounded-3xl shadow-2xl p-8 overflow-hidden max-h-[85vh] flex flex-col"
+            >
+              <div className="flex items-center justify-between mb-6 shrink-0">
+                <div>
+                  <h3 className="text-xl font-bold text-gray-900">مراجعة استيراد Excel</h3>
+                  <p className="text-sm text-gray-500 mt-1">يرجى مراجعة الأصناف والتغييرات التي سيتم تطبيقها قبل تأكيد الحفظ</p>
+                </div>
+                <button 
+                  onClick={() => { if (!isImporting) { setIsImportExcelModalOpen(false); setImportPreviewItems([]); } }}
+                  disabled={isImporting}
+                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-xl transition-all disabled:opacity-50"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-4 my-2 pr-1 text-right" dir="rtl">
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-sm text-amber-800">
+                  ⚠️ <strong>ملاحظة هامة:</strong> التعديلات لن تؤثر على الأصناف أو البيانات الحالية غير الموجودة في ملف Excel. سيتم فقط تحديث كميات الأصناف المطابقة وإضافة الأصناف الجديدة.
+                </div>
+
+                <div className="border border-gray-200 rounded-2xl overflow-hidden">
+                  <table className="w-full text-right text-sm">
+                    <thead className="bg-gray-50 text-gray-600 font-bold border-b border-gray-200">
+                      <tr>
+                        <th className="px-4 py-3 text-right">الصنف</th>
+                        <th className="px-4 py-3 text-right">الحالة</th>
+                        <th className="px-4 py-3 text-right">الكمية السابقة</th>
+                        <th className="px-4 py-3 text-right">الكمية الجديدة</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {importPreviewItems.map((item, index) => (
+                        <tr key={index} className="hover:bg-gray-50">
+                          <td className="px-4 py-3 font-semibold text-gray-900">{item.name}</td>
+                          <td className="px-4 py-3">
+                            {item.isNew ? (
+                              <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700 text-xs font-bold rounded-lg border border-emerald-100">
+                                صنف جديد
+                              </span>
+                            ) : item.oldQuantity === item.quantity ? (
+                              <span className="px-2.5 py-1 bg-gray-50 text-gray-600 text-xs font-bold rounded-lg border border-gray-100">
+                                بدون تغيير
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-1 bg-sky-50 text-sky-700 text-xs font-bold rounded-lg border border-sky-100">
+                                تحديث كمية
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-gray-500">
+                            {item.isNew ? '-' : `${item.oldQuantity} ${item.unit}`}
+                          </td>
+                          <td className="px-4 py-3 font-bold text-gray-900">
+                            {item.quantity} {item.unit}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-6 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleConfirmImport}
+                  disabled={isImporting}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-emerald-100 flex items-center justify-center gap-2"
+                >
+                  {isImporting ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      جاري الاستيراد والتحديث...
+                    </>
+                  ) : (
+                    'تأكيد واستيراد البيانات'
+                  )}
+                </button>
+                <button
+                  type="button"
+                  disabled={isImporting}
+                  onClick={() => { setIsImportExcelModalOpen(false); setImportPreviewItems([]); }}
+                  className="flex-1 bg-gray-100 hover:bg-gray-200 disabled:opacity-50 text-gray-700 font-bold py-3.5 rounded-xl transition-all"
+                >
+                  إلغاء
+                </button>
+              </div>
             </motion.div>
           </div>
         )}
