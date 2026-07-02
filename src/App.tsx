@@ -36,7 +36,9 @@ import {
   UserPlus,
   Settings,
   FileDown,
-  Upload
+  Upload,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
@@ -154,6 +156,11 @@ export default function App() {
   const [newUserData, setNewUserData] = useState({ username: '', password: '', name: '', email: '', role: 'user' as UserRole });
   const [editUserData, setEditUserData] = useState({ username: '', password: '', name: '', email: '', role: 'user' as UserRole });
 
+  // Password visibility states
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [showAddUserPassword, setShowAddUserPassword] = useState(false);
+  const [showEditUserPassword, setShowEditUserPassword] = useState(false);
+
   const [reportStartDate, setReportStartDate] = useState<string>(format(startOfMonth(new Date()), 'yyyy-MM-dd'));
   const [reportEndDate, setReportEndDate] = useState<string>(format(new Date(), 'yyyy-MM-dd'));
 
@@ -166,15 +173,25 @@ export default function App() {
         const querySnapshot = await getDocs(q);
         
         if (querySnapshot.empty) {
-          // Create initial admin
+          // Create initial admin with correct requested password
           await addDoc(usersRef, {
             username: 'ashraf',
-            password: '11111',
+            password: 'ashrafbadawy',
             name: 'Ashraf',
             email: 'AshrafBadawy33@gmail.com',
             role: 'admin'
           });
-          console.log("Initial admin 'ashraf' created.");
+          console.log("Initial admin 'ashraf' created with password 'ashrafbadawy'.");
+        } else {
+          // If already exists but has old password "11111", update it to "ashrafbadawy" in Firestore
+          const adminDoc = querySnapshot.docs[0];
+          const adminData = adminDoc.data();
+          if (adminData.password === '11111') {
+            await updateDoc(doc(db, 'users', adminDoc.id), {
+              password: 'ashrafbadawy'
+            });
+            console.log("Admin 'ashraf' password updated from '11111' to 'ashrafbadawy'.");
+          }
         }
       } catch (error) {
         handleFirestoreError(error, OperationType.GET, 'users');
@@ -262,7 +279,7 @@ export default function App() {
       return;
     }
 
-    const userPath = `users/${currentUser.id}`;
+    const userPath = 'users/admin-1';
 
     const unsubItems = onSnapshot(collection(db, userPath, 'items'), (snapshot) => {
       const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as InventoryItem));
@@ -326,7 +343,7 @@ export default function App() {
 
   const executeAction = async (action: AIAction) => {
     if (!currentUser) return;
-    const userPath = `users/${currentUser.id}`;
+    const userPath = 'users/admin-1';
 
     if (action.action === 'unauthorized') {
       setFeedback({ type: 'error', message: 'عذراً، ليس لديك الصلاحية للقيام بهذه العملية.' });
@@ -522,9 +539,12 @@ export default function App() {
     setIsLoggingIn(true);
     setLoginError('');
 
+    const enteredUsername = loginData.username.trim();
+    const enteredPassword = loginData.password.trim();
+
     try {
       const usersRef = collection(db, 'users');
-      const q = query(usersRef, where('username', '==', loginData.username));
+      const q = query(usersRef, where('username', '==', enteredUsername));
       const querySnapshot = await getDocs(q);
       
       if (querySnapshot.empty) {
@@ -536,7 +556,7 @@ export default function App() {
       const userDoc = querySnapshot.docs[0];
       const userData = userDoc.data() as User;
 
-      if (userData.password === loginData.password) {
+      if (userData.password.trim() === enteredPassword) {
         const userWithId = { ...userData, id: userDoc.id };
         setCurrentUser(userWithId);
         sessionStorage.setItem('inventory_user_id', userDoc.id);
@@ -552,7 +572,7 @@ export default function App() {
       if (cachedUserStr) {
         try {
           const cachedUser = JSON.parse(cachedUserStr) as User;
-          if (cachedUser.username.trim().toLowerCase() === loginData.username.trim().toLowerCase() && cachedUser.password === loginData.password) {
+          if (cachedUser.username.trim().toLowerCase() === enteredUsername.toLowerCase() && cachedUser.password.trim() === enteredPassword) {
             setCurrentUser(cachedUser);
             sessionStorage.setItem('inventory_user_id', cachedUser.id);
             setFeedback({ type: 'info', message: 'تم تسجيل الدخول في الوضع غير المتصل (Offline Mode)' });
@@ -588,11 +608,16 @@ export default function App() {
 
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newUserData.username || !newUserData.password || !newUserData.name) return;
+    const cleanUsername = newUserData.username.trim();
+    const cleanPassword = newUserData.password.trim();
+    const cleanName = newUserData.name.trim();
+    const cleanEmail = newUserData.email.trim();
+
+    if (!cleanUsername || !cleanPassword || !cleanName) return;
 
     try {
       const usersRef = collection(db, 'users');
-      const q = query(usersRef, where('username', '==', newUserData.username));
+      const q = query(usersRef, where('username', '==', cleanUsername));
       const querySnapshot = await getDocs(q);
 
       if (!querySnapshot.empty) {
@@ -600,8 +625,14 @@ export default function App() {
         return;
       }
 
-      await addDoc(usersRef, newUserData);
-      setFeedback({ type: 'success', message: `تم إضافة المستخدم ${newUserData.name} بنجاح` });
+      await addDoc(usersRef, {
+        username: cleanUsername,
+        password: cleanPassword,
+        name: cleanName,
+        email: cleanEmail,
+        role: newUserData.role
+      });
+      setFeedback({ type: 'success', message: `تم إضافة المستخدم ${cleanName} بنجاح` });
       setIsAddUserModalOpen(false);
       setNewUserData({ username: '', password: '', name: '', email: '', role: 'user' });
     } catch (error) {
@@ -611,18 +642,30 @@ export default function App() {
 
   const handleEditUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingUser || !editUserData.username || !editUserData.password || !editUserData.name) return;
+    const cleanUsername = editUserData.username.trim();
+    const cleanPassword = editUserData.password.trim();
+    const cleanName = editUserData.name.trim();
+    const cleanEmail = editUserData.email.trim();
+
+    if (!editingUser || !cleanUsername || !cleanPassword || !cleanName) return;
 
     try {
       const userRef = doc(db, 'users', editingUser.id);
-      await updateDoc(userRef, editUserData);
+      const updatedData = {
+        username: cleanUsername,
+        password: cleanPassword,
+        name: cleanName,
+        email: cleanEmail,
+        role: editUserData.role
+      };
+      await updateDoc(userRef, updatedData);
       
       // If editing self, update local state
       if (editingUser.id === currentUser?.id) {
-        setCurrentUser({ ...currentUser, ...editUserData });
+        setCurrentUser({ ...currentUser, ...updatedData });
       }
 
-      setFeedback({ type: 'success', message: `تم تحديث بيانات ${editUserData.name} بنجاح` });
+      setFeedback({ type: 'success', message: `تم تحديث بيانات ${cleanName} بنجاح` });
       setIsEditUserModalOpen(false);
       setEditingUser(null);
     } catch (error) {
@@ -660,7 +703,7 @@ export default function App() {
       setFeedback({ type: 'error', message: 'فقط المدير يمكنه مسح الأصناف' });
       return;
     }
-    const userPath = `users/${currentUser.id}`;
+    const userPath = 'users/admin-1';
     try {
       await deleteDoc(doc(db, userPath, 'items', id));
       setFeedback({ type: 'success', message: 'تم مسح الصنف بنجاح' });
@@ -678,7 +721,7 @@ export default function App() {
     e.preventDefault();
     if (!adjustModal.item || adjustQuantity <= 0 || !currentUser) return;
 
-    const userPath = `users/${currentUser.id}`;
+    const userPath = 'users/admin-1';
     const amount = adjustModal.type === 'withdraw' ? -adjustQuantity : adjustQuantity;
     const item = adjustModal.item;
 
@@ -798,7 +841,7 @@ export default function App() {
   const handleConfirmImport = async () => {
     if (!currentUser || importPreviewItems.length === 0) return;
     setIsImporting(true);
-    const userPath = `users/${currentUser.id}`;
+    const userPath = 'users/admin-1';
     let addedCount = 0;
     let updatedCount = 0;
 
@@ -864,7 +907,7 @@ export default function App() {
     e.preventDefault();
     if (!newItemData.name || !currentUser) return;
 
-    const userPath = `users/${currentUser.id}`;
+    const userPath = 'users/admin-1';
     const newItem: Omit<InventoryItem, 'id'> = {
       name: newItemData.name,
       quantity: newItemData.quantity,
@@ -905,7 +948,7 @@ export default function App() {
     e.preventDefault();
     if (!thresholdModal.item || !currentUser) return;
 
-    const userPath = `users/${currentUser.id}`;
+    const userPath = 'users/admin-1';
     try {
       await updateDoc(doc(db, userPath, 'items', thresholdModal.item.id), { 
         lowThreshold: thresholdValues.low, 
@@ -922,7 +965,7 @@ export default function App() {
     e.preventDefault();
     if (!newOrderData.item || newOrderData.quantity <= 0 || !currentUser) return;
 
-    const userPath = `users/${currentUser.id}`;
+    const userPath = 'users/admin-1';
     const newOrder: Omit<Order, 'id'> = {
       item: newOrderData.item,
       quantity: newOrderData.quantity,
@@ -947,7 +990,7 @@ export default function App() {
       return;
     }
 
-    const userPath = `users/${currentUser.id}`;
+    const userPath = 'users/admin-1';
     try {
       const item = items.find(i => i.name === order.item);
       if (item) {
@@ -1059,14 +1102,26 @@ export default function App() {
               <label className="text-sm font-bold text-gray-700 block">كلمة المرور</label>
               <div className="relative">
                 <input 
-                  type="password"
+                  type={showLoginPassword ? "text" : "password"}
                   required
                   value={loginData.password}
                   onChange={(e) => setLoginData(prev => ({ ...prev, password: e.target.value }))}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 pr-10 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 pr-10 pl-10 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
                   placeholder="••••••••"
                 />
                 <Lock className="w-5 h-5 text-gray-400 absolute right-3 top-1/2 -translate-y-1/2" />
+                <button
+                  type="button"
+                  onClick={() => setShowLoginPassword(!showLoginPassword)}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none"
+                  title={showLoginPassword ? "إخفاء كلمة المرور" : "إظهار كلمة المرور"}
+                >
+                  {showLoginPassword ? (
+                    <EyeOff className="w-5 h-5" />
+                  ) : (
+                    <Eye className="w-5 h-5" />
+                  )}
+                </button>
               </div>
             </div>
 
@@ -2111,13 +2166,26 @@ export default function App() {
 
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-1">كلمة المرور</label>
-                  <input 
-                    type="text"
-                    required
-                    value={editUserData.password}
-                    onChange={(e) => setEditUserData(prev => ({ ...prev, password: e.target.value }))}
-                    className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-                  />
+                  <div className="relative">
+                    <input 
+                      type={showEditUserPassword ? "text" : "password"}
+                      required
+                      value={editUserData.password}
+                      onChange={(e) => setEditUserData(prev => ({ ...prev, password: e.target.value }))}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 pl-10 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowEditUserPassword(!showEditUserPassword)}
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none"
+                    >
+                      {showEditUserPassword ? (
+                        <EyeOff className="w-5 h-5" />
+                      ) : (
+                        <Eye className="w-5 h-5" />
+                      )}
+                    </button>
+                  </div>
                 </div>
 
                 <div>
@@ -2201,14 +2269,27 @@ export default function App() {
 
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-1">كلمة المرور</label>
-                  <input 
-                    type="password"
-                    required
-                    value={newUserData.password}
-                    onChange={(e) => setNewUserData(prev => ({ ...prev, password: e.target.value }))}
-                    className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-                    placeholder="••••••••"
-                  />
+                  <div className="relative">
+                    <input 
+                      type={showAddUserPassword ? "text" : "password"}
+                      required
+                      value={newUserData.password}
+                      onChange={(e) => setNewUserData(prev => ({ ...prev, password: e.target.value }))}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl py-3 px-4 pl-10 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                      placeholder="••••••••"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowAddUserPassword(!showAddUserPassword)}
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none"
+                    >
+                      {showAddUserPassword ? (
+                        <EyeOff className="w-5 h-5" />
+                      ) : (
+                        <Eye className="w-5 h-5" />
+                      )}
+                    </button>
+                  </div>
                 </div>
 
                 <div>
