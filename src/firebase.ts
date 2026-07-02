@@ -59,5 +59,13 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     path
   }
   console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+
+  const errMessage = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  const isPermissionError = errMessage.includes('permission') || 
+                            errMessage.includes('insufficient') || 
+                            (error && typeof error === 'object' && 'code' in error && error.code === 'permission-denied');
+
+  if (isPermissionError) {
+    throw new Error(JSON.stringify(errInfo));
+  }
 }

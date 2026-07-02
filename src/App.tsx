@@ -1540,36 +1540,24 @@ export default function App() {
                   
                   <button 
                     onClick={() => {
-                      const filteredTransactions = transactions.filter(t => {
-                        const date = t.date.split('T')[0];
-                        return date >= reportStartDate && date <= reportEndDate;
-                      });
-                      
                       const reportData = items.map(item => {
-                        const periodTransactions = transactions.filter(t => {
-                          const date = t.date.split('T')[0];
-                          return date >= reportStartDate && date <= reportEndDate;
-                        });
-                        
-                        const withdrawals = periodTransactions.filter(t => t.itemId === item.id && t.type === 'withdraw');
-                        const receipts = periodTransactions.filter(t => t.itemId === item.id && t.type === 'receive');
-                        const returns = periodTransactions.filter(t => t.itemId === item.id && t.type === 'return');
-                        
-                        // Total history for Original Count
+                        const itemOrders = orders.filter(o => o.item === item.name && o.status === 'delivered');
+                        const lastOrder = itemOrders[0] || null;
+                        const lastOrderQty = lastOrder ? lastOrder.quantity : 0;
+
                         const totalReceived = transactions
                           .filter(t => t.itemId === item.id && t.type === 'receive')
                           .reduce((sum, t) => sum + t.quantity, 0);
 
-                        const totalWithdrawnPeriod = withdrawals.reduce((sum, t) => sum + t.quantity, 0);
-                        const totalReturnedPeriod = returns.reduce((sum, t) => sum + t.quantity, 0);
+                        const originalQty = lastOrder ? Math.max(0, totalReceived - lastOrderQty) : totalReceived;
+                        const remainingFromOrder = lastOrder ? Math.max(0, Math.min(lastOrderQty, item.quantity - originalQty)) : 0;
 
                         return {
-                          'اسم الصنف': item.name,
-                          'العدد الأصلي (إجمالي الاستلام)': totalReceived,
-                          'إجمالي السحب (الصافي)': totalWithdrawnPeriod - totalReturnedPeriod,
-                          'الكمية الحالية': item.quantity,
-                          'الاستهلاك الصافي (الفرق)': totalReceived - item.quantity,
-                          'الوحدة': item.unit
+                          'نوع الصنف': item.name,
+                          'العدد الأصلي': originalQty,
+                          'الطلبيه': lastOrderQty,
+                          'المتبقي من الطلبيه': remainingFromOrder,
+                          'العدد النهائي': item.quantity
                         };
                       });
                       exportToExcel(reportData, `تقرير_المخزون_${reportStartDate}_إلى_${reportEndDate}`);
@@ -1658,50 +1646,37 @@ export default function App() {
                 </div>
 
                 <div className="bg-white p-8 rounded-3xl border border-gray-200 shadow-sm">
-                  <h4 className="text-lg font-bold text-gray-900 mb-6">تقرير سحب الكميات لكل صنف (الفترة المختارة)</h4>
+                  <h4 className="text-lg font-bold text-gray-900 mb-6">تقرير المخزون التفصيلي لكل صنف</h4>
                   <div className="overflow-x-auto">
                     <table className="w-full text-right">
                       <thead>
                         <tr className="border-b border-gray-100">
-                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">اسم الصنف</th>
-                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">العدد الأصلي (إجمالي الاستلام)</th>
-                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">إجمالي السحب (الصافي)</th>
-                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">الكمية الحالية</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">نوع الصنف</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">العدد الأصلي</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">الطلبية</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">المتبقي من الطلبية</th>
+                          <th className="px-6 py-4 text-xs text-gray-400 uppercase font-bold text-right">العدد النهائي</th>
                         </tr>
                       </thead>
                       <tbody>
                         {items.slice((reportsPage - 1) * ITEMS_PER_PAGE, reportsPage * ITEMS_PER_PAGE).map(item => {
-                          const filteredTransactions = transactions.filter(t => {
-                            const date = t.date.split('T')[0];
-                            return date >= reportStartDate && date <= reportEndDate;
-                          });
-
-                          const totalWithdrawn = filteredTransactions
-                            .filter(t => t.itemId === item.id && t.type === 'withdraw')
-                            .reduce((sum, t) => sum + t.quantity, 0);
-                          
-                          const totalReturned = filteredTransactions
-                            .filter(t => t.itemId === item.id && t.type === 'return')
-                            .reduce((sum, t) => sum + t.quantity, 0);
+                          const itemOrders = orders.filter(o => o.item === item.name && o.status === 'delivered');
+                          const lastOrder = itemOrders[0] || null;
+                          const lastOrderQty = lastOrder ? lastOrder.quantity : 0;
 
                           const totalReceived = transactions
                             .filter(t => t.itemId === item.id && t.type === 'receive')
                             .reduce((sum, t) => sum + t.quantity, 0);
 
-                          const netWithdrawal = totalWithdrawn - totalReturned;
+                          const originalQty = lastOrder ? Math.max(0, totalReceived - lastOrderQty) : totalReceived;
+                          const remainingFromOrder = lastOrder ? Math.max(0, Math.min(lastOrderQty, item.quantity - originalQty)) : 0;
 
                           return (
                             <tr key={item.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
                               <td className="px-6 py-4 font-bold text-gray-900">{item.name}</td>
-                              <td className="px-6 py-4 font-black text-gray-700">{totalReceived}</td>
-                              <td className="px-6 py-4 font-black text-red-600">
-                                {netWithdrawal}
-                                {totalReturned > 0 && (
-                                  <span className="text-[10px] text-blue-500 mr-2 font-bold">
-                                    (بعد خصم {totalReturned} مرتجع)
-                                  </span>
-                                )}
-                              </td>
+                              <td className="px-6 py-4 font-black text-gray-700">{originalQty}</td>
+                              <td className="px-6 py-4 font-black text-blue-600">{lastOrderQty}</td>
+                              <td className="px-6 py-4 font-black text-purple-600">{remainingFromOrder}</td>
                               <td className="px-6 py-4">
                                 <span className="font-black text-emerald-600">{item.quantity}</span>
                                 <span className="text-xs text-gray-500 mr-1">{item.unit}</span>
