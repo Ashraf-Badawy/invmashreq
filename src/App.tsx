@@ -138,6 +138,9 @@ export default function App() {
   const [thresholdModal, setThresholdModal] = useState<{ isOpen: boolean, item: InventoryItem | null }>({ isOpen: false, item: null });
   const [thresholdValues, setThresholdValues] = useState({ low: 10, critical: 5 });
   const [newOrderData, setNewOrderData] = useState({ item: '', quantity: 1 });
+  const [deleteOrderModal, setDeleteOrderModal] = useState<{ isOpen: boolean, order: Order | null }>({ isOpen: false, order: null });
+  const [editOrderModal, setEditOrderModal] = useState<{ isOpen: boolean, order: Order | null }>({ isOpen: false, order: null });
+  const [editOrderQuantity, setEditOrderQuantity] = useState<number>(1);
 
   // Excel Import States
   const [isImportExcelModalOpen, setIsImportExcelModalOpen] = useState(false);
@@ -620,13 +623,13 @@ export default function App() {
 
     const aoa: any[][] = [];
     interface ExcelRowMetadata {
-      type: 'header' | 'normal_tx' | 'order' | 'summary' | 'empty';
+      type: 'header' | 'receive_tx' | 'withdraw_tx' | 'return_tx' | 'order' | 'pre_order_stock' | 'post_order_stock' | 'summary' | 'empty';
       itemName?: string;
     }
     const metadata: ExcelRowMetadata[] = [];
 
     // 1. Add Sheet Header
-    aoa.push(["اسم الصنف", "التاريخ والوقت", "نوع الحركة", "الكمية", "المستخدم", "ملاحظات / حالة الحركة"]);
+    aoa.push(["اسم الصنف", "التاريخ والوقت", "نوع الحركة", "الوارد (+)", "المنصرف (-)", "رصيد المخزن", "المستخدم", "ملاحظات / حالة الحركة"]);
     metadata.push({ type: 'header' });
 
     // 2. Iterate through each item to generate its separate section
@@ -641,57 +644,241 @@ export default function App() {
       // Find orders of this item
       const itemOrders = orders.filter(o => o.item && o.item.trim() === item.name.trim());
 
-      // Map Transactions
-      const txMovements = itemTransactions.map(t => ({
-        itemName: item.name,
-        dateStr: formatMovementDate(t.date),
-        dateObj: parseDate(t.date),
-        type: t.type === 'receive' ? 'استلام مخزون (إيداع)' : t.type === 'withdraw' ? 'سحب مخزون (صرف)' : 'مرتجع صنف',
-        quantity: t.quantity,
-        user: t.user || 'غير محدد',
-        notes: t.type === 'receive' ? 'إضافة إلى الرفوف' : t.type === 'withdraw' ? 'صرف من المستودع' : 'إرجاع إلى الرفوف',
-        isOrder: false
-      }));
+      // Smart Matching to prevent double counting:
+      // We match delivered orders with their corresponding 'receive' transactions.
+      const matchedTxIds = new Set<string>();
+      const matchedOrderIds = new Set<string>();
+      const orderTxPairs: { order: Order; tx: Transaction }[] = [];
 
-      // Map Orders
-      const orderMovements = itemOrders.map(o => ({
-        itemName: item.name,
-        dateStr: formatMovementDate(o.order_date),
-        dateObj: parseDate(o.order_date),
-        type: 'طلب شحنة جديدة (طلبية)',
-        quantity: o.quantity,
-        user: 'إضافة طلبية',
-        notes: o.status === 'pending' ? 'طلبية معلقة' : o.status === 'delivered' ? `تم استلامها في ${o.delivery_date || ''}` : 'طلبية ملغاة',
-        isOrder: true
-      }));
+      const deliveredOrders = itemOrders.filter(o => o.status === 'delivered');
+      const receiveTransactions = itemTransactions.filter(t => t.type === 'receive');
 
-      // Sort combined movements chronologically (from oldest to newest)
-      const sortedMovements = [...txMovements, ...orderMovements].sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
+      deliveredOrders.forEach(o => {
+        // Find an unmatched 'receive' transaction of the same quantity and close delivery date
+        const match = receiveTransactions.find(t => 
+          !matchedTxIds.has(t.id) &&
+          t.quantity === o.quantity &&
+          (
+            t.date.startsWith(o.delivery_date || '') || 
+            (o.delivery_date && o.delivery_date.startsWith(t.date)) ||
+            Math.abs(parseDate(t.date).getTime() - parseDate(o.delivery_date || '').getTime()) <= 24 * 60 * 60 * 1000
+          )
+        );
+
+        if (match) {
+          matchedTxIds.add(match.id);
+          matchedOrderIds.add(o.id);
+          orderTxPairs.push({ order: o, tx: match });
+        }
+      });
+
+      // Define our unified movement interface
+      interface UnifiedMovement {
+        itemName: string;
+        dateStr: string;
+        dateObj: Date;
+        type: string;
+        incoming: number;
+        outgoing: number;
+        isPhysical: boolean;
+        user: string;
+        notes: string;
+        rowType: 'receive_tx' | 'withdraw_tx' | 'return_tx' | 'order';
+      }
+
+      const movements: UnifiedMovement[] = [];
+
+      // Add normal (unmatched) transactions
+      itemTransactions.forEach(t => {
+        if (matchedTxIds.has(t.id)) return; // Skip because it is represented as a delivered order
+
+        movements.push({
+          itemName: item.name,
+          dateStr: formatMovementDate(t.date),
+          dateObj: parseDate(t.date),
+          type: t.type === 'receive' ? 'إيداع مخزون' : t.type === 'withdraw' ? 'سحب مخزون' : 'مرتجع صنف',
+          incoming: t.type === 'receive' || t.type === 'return' ? t.quantity : 0,
+          outgoing: t.type === 'withdraw' ? t.quantity : 0,
+          isPhysical: true,
+          user: t.user || 'غير محدد',
+          notes: t.type === 'receive' ? 'إضافة إلى الرفوف' : t.type === 'withdraw' ? 'صرف من المستودع' : 'إرجاع إلى الرفوف',
+          rowType: t.type === 'receive' ? 'receive_tx' : t.type === 'withdraw' ? 'withdraw_tx' : 'return_tx'
+        });
+      });
+
+      // Add matched delivered orders (unified representation)
+      orderTxPairs.forEach(pair => {
+        movements.push({
+          itemName: item.name,
+          dateStr: formatMovementDate(pair.order.delivery_date || pair.order.order_date),
+          dateObj: parseDate(pair.order.delivery_date || pair.order.order_date),
+          type: 'استلام طلبية (تم التوصيل)',
+          incoming: pair.order.quantity,
+          outgoing: 0,
+          isPhysical: true,
+          user: pair.tx.user || 'إضافة طلبية',
+          notes: `طلبية تم طلبها بتاريخ ${pair.order.order_date} وتم استلامها وإضافتها للمستودع`,
+          rowType: 'order'
+        });
+      });
+
+      // Add other unmatched orders (pending, cancelled, or unmatched delivered)
+      itemOrders.forEach(o => {
+        if (matchedOrderIds.has(o.id)) return; // Already unified and handled
+
+        if (o.status === 'pending') {
+          movements.push({
+            itemName: item.name,
+            dateStr: formatMovementDate(o.order_date),
+            dateObj: parseDate(o.order_date),
+            type: 'طلب شحنة جديدة (طلبية قيد الانتظار)',
+            incoming: 0,
+            outgoing: 0,
+            isPhysical: false,
+            user: 'إضافة طلبية',
+            notes: 'طلبية معلقة وبانتظار الاستلام',
+            rowType: 'order'
+          });
+        } else if (o.status === 'delivered') {
+          // If delivered but unmatched with a transaction, keep it as delivered
+          movements.push({
+            itemName: item.name,
+            dateStr: formatMovementDate(o.delivery_date || o.order_date),
+            dateObj: parseDate(o.delivery_date || o.order_date),
+            type: 'استلام طلبية (تم التوصيل)',
+            incoming: o.quantity,
+            outgoing: 0,
+            isPhysical: true,
+            user: 'إضافة طلبية',
+            notes: `طلبية تم طلبها بتاريخ ${o.order_date} وتم استلامها`,
+            rowType: 'order'
+          });
+        } else {
+          movements.push({
+            itemName: item.name,
+            dateStr: formatMovementDate(o.order_date),
+            dateObj: parseDate(o.order_date),
+            type: 'طلبية ملغاة / غير مستلمة',
+            incoming: 0,
+            outgoing: 0,
+            isPhysical: false,
+            user: 'إضافة طلبية',
+            notes: 'طلبية ملغاة',
+            rowType: 'order'
+          });
+        }
+      });
+
+      // Sort all movements chronologically (from oldest to newest)
+      const sortedMovements = movements.sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
+
+      // Current stock is item.quantity
+      const currentStock = item.quantity;
+
+      // Work backwards to find initialStock (Opening Balance)
+      let netChange = 0;
+      sortedMovements.forEach(m => {
+        if (m.isPhysical) {
+          netChange += (m.incoming - m.outgoing);
+        }
+      });
+
+      let initialStock = currentStock - netChange;
+      if (initialStock < 0) {
+        initialStock = 0;
+      }
+
+      // We track running physical stock to represent history accurately
+      let runningStock = initialStock;
+
+      // Add Opening Balance Row (رصيد أول المدة) if there is any movement history
+      if (sortedMovements.length > 0) {
+        aoa.push([
+          item.name,
+          sortedMovements[0].dateStr,
+          "رصيد أول المدة (الرصيد الافتتاحي)",
+          "",
+          "",
+          initialStock,
+          "النظام",
+          "الرصيد الافتتاحي في بداية الحركات"
+        ]);
+        metadata.push({
+          type: 'pre_order_stock',
+          itemName: item.name
+        });
+      }
 
       // 3. Add movement rows to aoa
       sortedMovements.forEach(m => {
+        const isOrder = m.rowType === 'order' && m.isPhysical && m.incoming > 0;
+
+        if (isOrder) {
+          // Add row BEFORE order showing the stock level before the order was received
+          aoa.push([
+            item.name,
+            m.dateStr,
+            "إجمالي الكمية الموجودة بالمخزن قبل الطلبية مباشرة",
+            "",
+            "",
+            runningStock,
+            "النظام",
+            "رصيد المخزن المحتسب قبل التوريد مباشرة"
+          ]);
+          metadata.push({
+            type: 'pre_order_stock',
+            itemName: item.name
+          });
+        }
+
+        if (m.isPhysical) {
+          runningStock += (m.incoming - m.outgoing);
+        }
+
         aoa.push([
           m.itemName,
           m.dateStr,
           m.type,
-          m.quantity,
+          m.incoming > 0 ? m.incoming : "",
+          m.outgoing > 0 ? m.outgoing : "",
+          runningStock,
           m.user,
           m.notes
         ]);
         metadata.push({ 
-          type: m.isOrder ? 'order' : 'normal_tx', 
+          type: m.rowType, 
           itemName: item.name 
         });
+
+        if (isOrder) {
+          // Add row AFTER order showing the stock level after the order was received
+          aoa.push([
+            item.name,
+            m.dateStr,
+            "مجموع المخزن بعد استلام الطلبية مباشرة",
+            "",
+            "",
+            runningStock,
+            "النظام",
+            "رصيد المخزن المحتسب بعد توريد الكمية"
+          ]);
+          metadata.push({
+            type: 'post_order_stock',
+            itemName: item.name
+          });
+        }
       });
 
       // 4. Add Summary Row showing current stock
       aoa.push([
         item.name,
-        "الرصيد الحالي بالمخزن",
+        "",
+        "إجمالي الرصيد الحالي بالمخزن",
+        "",
         "",
         item.quantity,
-        item.unit || "وحدة",
-        "مخزون متوفر حالياً"
+        "",
+        "مخزون متوفر حالياً بالمستودع"
       ]);
       metadata.push({ 
         type: 'summary', 
@@ -699,21 +886,23 @@ export default function App() {
       });
 
       // 5. Add an empty separator row
-      aoa.push(["", "", "", "", "", ""]);
+      aoa.push(["", "", "", "", "", "", "", ""]);
       metadata.push({ type: 'empty' });
     });
 
     // Create Worksheet
     const ws = XLSX.utils.aoa_to_sheet(aoa);
 
-    // Set column widths
+    // Set column widths for 8 columns
     ws['!cols'] = [
-      { wch: 25 }, // اسم الصنف
+      { wch: 20 }, // اسم الصنف
       { wch: 20 }, // التاريخ والوقت
       { wch: 25 }, // نوع الحركة
-      { wch: 12 }, // الكمية
-      { wch: 18 }, // المستخدم
-      { wch: 30 }  // ملاحظات / حالة الحركة
+      { wch: 12 }, // الوارد (+)
+      { wch: 12 }, // المنصرف (-)
+      { wch: 15 }, // رصيد المخزن
+      { wch: 15 }, // المستخدم
+      { wch: 35 }  // ملاحظات / حالة الحركة
     ];
 
     // Apply styles to each cell based on metadata
@@ -746,6 +935,18 @@ export default function App() {
           // Soft Yellow/Amber for Orders
           cell.s.fill = { fgColor: { rgb: "FEF3C7" } }; 
           cell.s.font = { name: "Calibri", sz: 11, bold: true, color: { rgb: "92400E" } };
+        } else if (rowMeta.type === 'pre_order_stock') {
+          // Soft Orange/Peach for Stock before Orders
+          cell.s.fill = { fgColor: { rgb: "FFEDD5" } }; 
+          cell.s.font = { name: "Calibri", sz: 11, bold: true, color: { rgb: "9A3412" } };
+        } else if (rowMeta.type === 'post_order_stock') {
+          // Soft Indigo/Blue for Stock after Orders
+          cell.s.fill = { fgColor: { rgb: "E0E7FF" } }; 
+          cell.s.font = { name: "Calibri", sz: 11, bold: true, color: { rgb: "3730A3" } };
+        } else if (rowMeta.type === 'receive_tx' || rowMeta.type === 'return_tx') {
+          // Distinct Soft Green/Mint for Received/Returned Quantities
+          cell.s.fill = { fgColor: { rgb: "DCFCE7" } }; 
+          cell.s.font = { name: "Calibri", sz: 11, bold: true, color: { rgb: "15803D" } };
         } else if (rowMeta.type === 'summary') {
           // Soft Green/Emerald for Current Stock Balance
           cell.s.fill = { fgColor: { rgb: "D1FAE5" } }; 
@@ -1180,6 +1381,45 @@ export default function App() {
       setFeedback({ type: 'success', message: `تم استلام الطلبية وإضافتها للمخزون: ${order.item}` });
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `${userPath}/items/orders/transactions`);
+    }
+  };
+
+  const handleDeleteOrder = async (orderId: string) => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      setFeedback({ type: 'error', message: 'فقط المدير يمكنه إلغاء أو حذف الطلبيات' });
+      return;
+    }
+
+    const userPath = 'users/admin-1';
+    try {
+      await deleteDoc(doc(db, userPath, 'orders', orderId));
+      setFeedback({ type: 'success', message: 'تم إلغاء وحذف الطلبية بنجاح' });
+      setDeleteOrderModal({ isOpen: false, order: null });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `${userPath}/orders/${orderId}`);
+    }
+  };
+
+  const handleEditOrderQuantity = async (orderId: string, newQty: number) => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      setFeedback({ type: 'error', message: 'فقط المدير يمكنه تعديل كميات الطلبيات' });
+      return;
+    }
+
+    if (newQty <= 0) {
+      setFeedback({ type: 'error', message: 'الكمية يجب أن تكون أكبر من صفر' });
+      return;
+    }
+
+    const userPath = 'users/admin-1';
+    try {
+      await updateDoc(doc(db, userPath, 'orders', orderId), {
+        quantity: newQty
+      });
+      setFeedback({ type: 'success', message: 'تم تعديل كمية الطلبية بنجاح' });
+      setEditOrderModal({ isOpen: false, order: null });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `${userPath}/orders/${orderId}`);
     }
   };
 
@@ -1845,12 +2085,33 @@ export default function App() {
                           </span>
                         </div>
                         {currentUser.role === 'admin' && order.status === 'pending' && (
-                          <button 
-                            onClick={() => handleReceiveOrder(order)}
-                            className="bg-gray-900 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-gray-800 transition-all"
-                          >
-                            استلام
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button 
+                              onClick={() => handleReceiveOrder(order)}
+                              className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-emerald-700 transition-all shadow-sm"
+                            >
+                              استلام
+                            </button>
+                            <button 
+                              onClick={() => {
+                                setEditOrderModal({ isOpen: true, order });
+                                setEditOrderQuantity(order.quantity);
+                              }}
+                              className="bg-blue-50 text-blue-600 hover:bg-blue-100 hover:text-blue-700 border border-blue-100 px-3 py-2 rounded-xl text-sm font-bold transition-all flex items-center gap-1.5"
+                              title="تعديل كمية الطلبية"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                              تعديل
+                            </button>
+                            <button 
+                              onClick={() => setDeleteOrderModal({ isOpen: true, order })}
+                              className="bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-700 border border-red-100 px-3 py-2 rounded-xl text-sm font-bold transition-all flex items-center gap-1.5"
+                              title="حذف أو إلغاء الطلبية"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                              حذف
+                            </button>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -1957,23 +2218,50 @@ export default function App() {
                   </button>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm">
-                    <p className="text-sm text-gray-500 mb-1">إجمالي الأصناف</p>
-                    <h4 className="text-3xl font-black text-gray-900">{items.length}</h4>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-6">
+                  <div className="bg-white p-5 rounded-3xl border border-gray-200 shadow-sm flex flex-col justify-between">
+                    <p className="text-xs text-gray-400 font-bold mb-1">إجمالي الأصناف</p>
+                    <h4 className="text-2xl font-black text-gray-900">{items.length}</h4>
                   </div>
-                  <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm">
-                    <p className="text-sm text-gray-500 mb-1">عمليات السحب (الفترة المختارة)</p>
-                    <h4 className="text-3xl font-black text-gray-900">
+                  <div className="bg-white p-5 rounded-3xl border border-gray-200 shadow-sm flex flex-col justify-between">
+                    <p className="text-xs text-gray-400 font-bold mb-1">عمليات الإيداع (الفترة)</p>
+                    <h4 className="text-2xl font-black text-emerald-600">
+                      {transactions.filter(t => {
+                        const date = t.date.split('T')[0];
+                        return (t.type === 'receive' || t.type === 'return') && date >= reportStartDate && date <= reportEndDate;
+                      }).length}
+                    </h4>
+                  </div>
+                  <div className="bg-white p-5 rounded-3xl border border-gray-200 shadow-sm flex flex-col justify-between">
+                    <p className="text-xs text-gray-400 font-bold mb-1">عمليات السحب (الفترة)</p>
+                    <h4 className="text-2xl font-black text-red-600">
                       {transactions.filter(t => {
                         const date = t.date.split('T')[0];
                         return t.type === 'withdraw' && date >= reportStartDate && date <= reportEndDate;
                       }).length}
                     </h4>
                   </div>
-                  <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm">
-                    <p className="text-sm text-gray-500 mb-1">طلبيات معلقة</p>
-                    <h4 className="text-3xl font-black text-gray-900">
+                  <div className="bg-white p-5 rounded-3xl border border-gray-200 shadow-sm flex flex-col justify-between">
+                    <p className="text-xs text-gray-400 font-bold mb-1">الكميات المودعة (الفترة)</p>
+                    <h4 className="text-2xl font-black text-emerald-700">
+                      {transactions.filter(t => {
+                        const date = t.date.split('T')[0];
+                        return (t.type === 'receive' || t.type === 'return') && date >= reportStartDate && date <= reportEndDate;
+                      }).reduce((sum, t) => sum + t.quantity, 0)}
+                    </h4>
+                  </div>
+                  <div className="bg-white p-5 rounded-3xl border border-gray-200 shadow-sm flex flex-col justify-between">
+                    <p className="text-xs text-gray-400 font-bold mb-1">الكميات المسحوبة (الفترة)</p>
+                    <h4 className="text-2xl font-black text-red-700">
+                      {transactions.filter(t => {
+                        const date = t.date.split('T')[0];
+                        return t.type === 'withdraw' && date >= reportStartDate && date <= reportEndDate;
+                      }).reduce((sum, t) => sum + t.quantity, 0)}
+                    </h4>
+                  </div>
+                  <div className="bg-white p-5 rounded-3xl border border-gray-200 shadow-sm flex flex-col justify-between">
+                    <p className="text-xs text-gray-400 font-bold mb-1">طلبيات معلقة</p>
+                    <h4 className="text-2xl font-black text-amber-600">
                       {orders.filter(o => o.status === 'pending').length}
                     </h4>
                   </div>
@@ -3043,6 +3331,149 @@ export default function App() {
                 >
                   تحديث الحدود
                 </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete Order Confirmation Modal */}
+      <AnimatePresence>
+        {deleteOrderModal.isOpen && deleteOrderModal.order && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setDeleteOrderModal({ isOpen: false, order: null })}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl p-8 overflow-hidden font-sans"
+              dir="rtl"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h3 className="text-xl font-bold text-gray-900">تأكيد إلغاء / حذف الطلبية</h3>
+                  <p className="text-xs text-gray-500">{deleteOrderModal.order.item}</p>
+                </div>
+                <button 
+                  onClick={() => setDeleteOrderModal({ isOpen: false, order: null })}
+                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-xl transition-all"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <p className="text-gray-600 text-sm leading-relaxed">
+                  هل أنت متأكد من رغبتك في إلغاء أو حذف هذه الطلبية لصنف <strong className="text-gray-900">{deleteOrderModal.order.item}</strong> (الكمية: {deleteOrderModal.order.quantity})؟ هذه العملية لا يمكن التراجع عنها.
+                </p>
+
+                <div className="flex gap-3 mt-6">
+                  <button 
+                    onClick={() => handleDeleteOrder(deleteOrderModal.order!.id)}
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg shadow-red-100 flex items-center justify-center gap-2"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    تأكيد الحذف
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => setDeleteOrderModal({ isOpen: false, order: null })}
+                    className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 px-4 rounded-xl transition-all text-center"
+                  >
+                    تراجع
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Edit Order Modal */}
+      <AnimatePresence>
+        {editOrderModal.isOpen && editOrderModal.order && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setEditOrderModal({ isOpen: false, order: null })}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl p-8 overflow-hidden font-sans"
+              dir="rtl"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h3 className="text-xl font-bold text-gray-900">تعديل كمية الطلبية</h3>
+                  <p className="text-xs text-gray-500">{editOrderModal.order.item}</p>
+                </div>
+                <button 
+                  onClick={() => setEditOrderModal({ isOpen: false, order: null })}
+                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-xl transition-all"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                handleEditOrderQuantity(editOrderModal.order!.id, editOrderQuantity);
+              }} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">الكمية الجديدة</label>
+                  <div className="flex items-center gap-3">
+                    <button 
+                      type="button"
+                      onClick={() => setEditOrderQuantity(prev => Math.max(1, prev - 1))}
+                      className="p-3 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl transition-all"
+                    >
+                      <Minus className="w-5 h-5" />
+                    </button>
+                    <input 
+                      type="number"
+                      required
+                      min="1"
+                      value={editOrderQuantity}
+                      onChange={(e) => setEditOrderQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="flex-1 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-center font-bold text-lg focus:outline-none focus:ring-2 focus:ring-gray-900 transition-all"
+                    />
+                    <button 
+                      type="button"
+                      onClick={() => setEditOrderQuantity(prev => prev + 1)}
+                      className="p-3 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl transition-all"
+                    >
+                      <Plus className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex gap-3 mt-6">
+                  <button 
+                    type="submit"
+                    className="flex-1 bg-gray-900 hover:bg-gray-800 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg shadow-gray-200 flex items-center justify-center gap-2"
+                  >
+                    <Edit2 className="w-4 h-4" />
+                    حفظ التعديل
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => setEditOrderModal({ isOpen: false, order: null })}
+                    className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 px-4 rounded-xl transition-all text-center"
+                  >
+                    إلغاء
+                  </button>
+                </div>
               </form>
             </motion.div>
           </div>
