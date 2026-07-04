@@ -44,7 +44,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { format, startOfMonth, endOfMonth, subMonths } from 'date-fns';
-import * as XLSX from 'xlsx';
+import XLSX from 'xlsx-js-style';
 import { 
   BarChart, 
   Bar, 
@@ -599,10 +599,167 @@ export default function App() {
     setActiveTab('inventory');
   };
 
-  const exportToExcel = (data: any[], fileName: string) => {
-    const ws = XLSX.utils.json_to_sheet(data);
+  const exportMovementsToExcel = (fileName: string) => {
+    const parseDate = (dStr: string) => {
+      if (!dStr) return new Date(0);
+      const d = new Date(dStr);
+      return isNaN(d.getTime()) ? new Date(0) : d;
+    };
+
+    const formatMovementDate = (dStr: string) => {
+      if (!dStr) return '';
+      if (dStr.includes('T')) {
+        try {
+          return format(new Date(dStr), 'yyyy-MM-dd HH:mm:ss');
+        } catch {
+          return dStr;
+        }
+      }
+      return dStr;
+    };
+
+    const aoa: any[][] = [];
+    interface ExcelRowMetadata {
+      type: 'header' | 'normal_tx' | 'order' | 'summary' | 'empty';
+      itemName?: string;
+    }
+    const metadata: ExcelRowMetadata[] = [];
+
+    // 1. Add Sheet Header
+    aoa.push(["اسم الصنف", "التاريخ والوقت", "نوع الحركة", "الكمية", "المستخدم", "ملاحظات / حالة الحركة"]);
+    metadata.push({ type: 'header' });
+
+    // 2. Iterate through each item to generate its separate section
+    items.forEach(item => {
+      // Find transactions of this item
+      const itemTransactions = transactions.filter(t => {
+        const matchesName = t.itemName && t.itemName.trim() === item.name.trim();
+        const matchesId = t.itemId === item.id;
+        return matchesName || matchesId;
+      });
+
+      // Find orders of this item
+      const itemOrders = orders.filter(o => o.item && o.item.trim() === item.name.trim());
+
+      // Map Transactions
+      const txMovements = itemTransactions.map(t => ({
+        itemName: item.name,
+        dateStr: formatMovementDate(t.date),
+        dateObj: parseDate(t.date),
+        type: t.type === 'receive' ? 'استلام مخزون (إيداع)' : t.type === 'withdraw' ? 'سحب مخزون (صرف)' : 'مرتجع صنف',
+        quantity: t.quantity,
+        user: t.user || 'غير محدد',
+        notes: t.type === 'receive' ? 'إضافة إلى الرفوف' : t.type === 'withdraw' ? 'صرف من المستودع' : 'إرجاع إلى الرفوف',
+        isOrder: false
+      }));
+
+      // Map Orders
+      const orderMovements = itemOrders.map(o => ({
+        itemName: item.name,
+        dateStr: formatMovementDate(o.order_date),
+        dateObj: parseDate(o.order_date),
+        type: 'طلب شحنة جديدة (طلبية)',
+        quantity: o.quantity,
+        user: 'إضافة طلبية',
+        notes: o.status === 'pending' ? 'طلبية معلقة' : o.status === 'delivered' ? `تم استلامها في ${o.delivery_date || ''}` : 'طلبية ملغاة',
+        isOrder: true
+      }));
+
+      // Sort combined movements chronologically (from oldest to newest)
+      const sortedMovements = [...txMovements, ...orderMovements].sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
+
+      // 3. Add movement rows to aoa
+      sortedMovements.forEach(m => {
+        aoa.push([
+          m.itemName,
+          m.dateStr,
+          m.type,
+          m.quantity,
+          m.user,
+          m.notes
+        ]);
+        metadata.push({ 
+          type: m.isOrder ? 'order' : 'normal_tx', 
+          itemName: item.name 
+        });
+      });
+
+      // 4. Add Summary Row showing current stock
+      aoa.push([
+        item.name,
+        "الرصيد الحالي بالمخزن",
+        "",
+        item.quantity,
+        item.unit || "وحدة",
+        "مخزون متوفر حالياً"
+      ]);
+      metadata.push({ 
+        type: 'summary', 
+        itemName: item.name 
+      });
+
+      // 5. Add an empty separator row
+      aoa.push(["", "", "", "", "", ""]);
+      metadata.push({ type: 'empty' });
+    });
+
+    // Create Worksheet
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+    // Set column widths
+    ws['!cols'] = [
+      { wch: 25 }, // اسم الصنف
+      { wch: 20 }, // التاريخ والوقت
+      { wch: 25 }, // نوع الحركة
+      { wch: 12 }, // الكمية
+      { wch: 18 }, // المستخدم
+      { wch: 30 }  // ملاحظات / حالة الحركة
+    ];
+
+    // Apply styles to each cell based on metadata
+    const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
+    for (let R = range.s.r; R <= range.e.r; ++R) {
+      const rowMeta = metadata[R];
+      if (!rowMeta) continue;
+
+      for (let C = range.s.c; C <= range.e.c; ++C) {
+        const cell_ref = XLSX.utils.encode_cell({ r: R, c: C });
+        const cell = ws[cell_ref];
+        if (!cell) continue;
+
+        // Base styles
+        cell.s = {
+          font: { name: "Calibri", sz: 11 },
+          alignment: { vertical: "center", horizontal: "center", wrapText: true },
+          border: {
+            top: { style: "thin", color: { rgb: "CBD5E1" } },
+            bottom: { style: "thin", color: { rgb: "CBD5E1" } },
+            left: { style: "thin", color: { rgb: "CBD5E1" } },
+            right: { style: "thin", color: { rgb: "CBD5E1" } }
+          }
+        };
+
+        if (rowMeta.type === 'header') {
+          cell.s.fill = { fgColor: { rgb: "1E293B" } }; // Deep Slate
+          cell.s.font = { name: "Calibri", sz: 12, bold: true, color: { rgb: "FFFFFF" } };
+        } else if (rowMeta.type === 'order') {
+          // Soft Yellow/Amber for Orders
+          cell.s.fill = { fgColor: { rgb: "FEF3C7" } }; 
+          cell.s.font = { name: "Calibri", sz: 11, bold: true, color: { rgb: "92400E" } };
+        } else if (rowMeta.type === 'summary') {
+          // Soft Green/Emerald for Current Stock Balance
+          cell.s.fill = { fgColor: { rgb: "D1FAE5" } }; 
+          cell.s.font = { name: "Calibri", sz: 11, bold: true, color: { rgb: "065F46" } };
+        } else if (rowMeta.type === 'empty') {
+          cell.s = {
+            border: {} // Clean empty row
+          };
+        }
+      }
+    }
+
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Report");
+    XLSX.utils.book_append_sheet(wb, ws, "تقرير الحركات والمخزون");
     XLSX.writeFile(wb, `${fileName}.xlsx`);
   };
 
@@ -1791,26 +1948,7 @@ export default function App() {
                   
                   <button 
                     onClick={() => {
-                      const reportData = items.map(item => {
-                        const itemOrders = orders.filter(o => o.item === item.name && o.status === 'delivered');
-                        const lastOrder = itemOrders[0] || null;
-                        const lastOrderQty = lastOrder ? lastOrder.quantity : 0;
-
-                        const totalReceived = transactions
-                          .filter(t => t.itemId === item.id && t.type === 'receive')
-                          .reduce((sum, t) => sum + t.quantity, 0);
-
-                        const originalQty = lastOrder ? Math.max(0, totalReceived - lastOrderQty) : totalReceived;
-                        const remainingFromOrder = lastOrder ? Math.max(0, Math.min(lastOrderQty, item.quantity - originalQty)) : 0;
-
-                        return {
-                          'نوع الصنف': item.name,
-                          'الطلبيه': lastOrderQty,
-                          'المتبقي من الطلبيه': remainingFromOrder,
-                          'العدد النهائي': item.quantity
-                        };
-                      });
-                      exportToExcel(reportData, `تقرير_المخزون_${reportStartDate}_إلى_${reportEndDate}`);
+                      exportMovementsToExcel(`تقرير_حركات_ومخزون_الأصناف_${reportStartDate}_إلى_${reportEndDate}`);
                     }}
                     className="flex items-center gap-2 px-6 py-3 bg-gray-900 text-white rounded-2xl font-bold hover:bg-gray-800 transition-all shadow-lg shadow-gray-200"
                   >
