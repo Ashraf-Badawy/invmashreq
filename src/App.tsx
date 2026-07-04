@@ -44,7 +44,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { format, startOfMonth, endOfMonth, subMonths } from 'date-fns';
-import XLSX from 'xlsx-js-style';
+import * as XLSXModule from 'xlsx-js-style';
+const XLSX = (XLSXModule as any).default || XLSXModule;
 import { 
   BarChart, 
   Bar, 
